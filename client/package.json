@@ -1,0 +1,44 @@
+{
+  "name": "class-demo-client",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ermis-network/ermis-chat-react": "file:../../ermis-chat-monorepo/packages/ermis-chat-react",
+    "@ermis-network/ermis-chat-sdk": "file:../../ermis-chat-monorepo/packages/ermis-chat-sdk",
+    "@excalidraw/excalidraw": "^0.17.0",
+    "@radix-ui/react-checkbox": "^1.3.7",
+    "@radix-ui/react-dialog": "^1.1.19",
+    "@radix-ui/react-label": "^2.1.11",
+    "@radix-ui/react-select": "^2.3.3",
+    "@radix-ui/react-slot": "^1.3.0",
+    "@radix-ui/react-tabs": "^1.1.17",
+    "@tailwindcss/vite": "^4.3.2",
+    "axios": "^1.6.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "hls.js": "^1.5.1",
+    "lucide-react": "^1.24.0",
+    "radix-ui": "^1.6.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-draggable": "^4.7.0",
+    "react-router-dom": "^6.21.0",
+    "socket.io-client": "^4.8.3",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@vitejs/plugin-react": "^4.2.1",
+    "typescript": "~5.3.3",
+    "vite": "^5.0.8"
+  }
+}
