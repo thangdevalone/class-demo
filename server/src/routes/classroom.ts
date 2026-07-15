@@ -96,7 +96,7 @@ router.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     const classroom = await Classroom.findById(req.params.id)
       .populate('teacher', 'displayName username avatar role ermisUserId')
       .populate('students', 'displayName username avatar role ermisUserId')
-      .populate('raiseHandQueue.student', 'displayName username avatar');
+      .populate('raiseHandQueue.student', 'displayName username avatar ermisUserId');
 
     if (!classroom) {
       res.status(404).json({ error: 'Classroom not found' });

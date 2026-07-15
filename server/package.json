@@ -9,7 +9,7 @@
     "seed": "ts-node-dev src/seed.ts"
   },
   "dependencies": {
-    "@ermis-network/ermis-chat-sdk": "file:../../ermis-chat-monorepo/packages/ermis-chat-sdk",
+    "@ermis-network/ermis-chat-sdk": "^2.1.0",
     "axios": "^1.18.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

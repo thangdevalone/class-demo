@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { Toaster } from 'sonner';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Loader2 } from 'lucide-react';
 import LoginPage from './pages/LoginPage';
@@ -89,6 +90,7 @@ export default function App() {
   return (
     <AuthProvider>
       <AppRoutes />
+      <Toaster position="top-right" richColors />
     </AuthProvider>
   );
 }

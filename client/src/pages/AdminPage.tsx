@@ -1,3 +1,4 @@
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -17,7 +18,7 @@ import {
   School,
   Trash2,
   Users,
-  Video, X, BookOpen, GraduationCap, Eye, EyeOff
+  Video, X, BookOpen, GraduationCap, Eye, EyeOff, Loader2
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
@@ -53,6 +54,7 @@ export default function AdminPage() {
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
   const [classFormError, setClassFormError] = useState('');
+  const [classFormLoading, setClassFormLoading] = useState(false);
   const [cameras, setCameras] = useState([
     { name: 'Camera 1', url: 'https://classroom-mediaserver.ermis.network/live/camera-01/master.m3u8', description: '' },
     { name: 'Camera 2', url: 'https://classroom-mediaserver.ermis.network/live/camera-02/master.m3u8', description: '' },
@@ -100,19 +102,24 @@ export default function AdminPage() {
         const payload: any = { displayName: newDisplayName, role: newRole };
         if (newPassword) payload.password = newPassword;
         await authAPI.updateUser(editingUserId, payload);
+        toast.success('Cập nhật tài khoản thành công');
       } else {
         await authAPI.register({ username: newUsername, password: newPassword, displayName: newDisplayName, role: newRole });
+        toast.success('Tạo tài khoản thành công');
       }
       const res = await authAPI.getUsers(); setUsers(res.data.users);
       setUserDialogOpen(false); resetUserForm();
-    } catch (err: any) { setUserFormError(err.response?.data?.error || 'Lưu thất bại'); }
+    } catch (err: any) { 
+      setUserFormError(err.response?.data?.error || 'Lưu thất bại');
+      toast.error(err.response?.data?.error || 'Lưu thất bại');
+    }
     finally { setUserFormLoading(false); }
   };
   const handleDeleteUser = async (userId: string, username: string) => {
-    if (username === 'admin') return;
+    if (username === 'admin') { toast.error('Không thể xóa admin'); return; }
     if (!confirm(`Xóa "${username}"?`)) return;
-    try { await authAPI.deleteUser(userId); setUsers((p) => p.filter((u) => u._id !== userId)); }
-    catch (err: any) { alert(err.response?.data?.error || 'Xóa thất bại'); }
+    try { await authAPI.deleteUser(userId); setUsers((p) => p.filter((u) => u._id !== userId)); toast.success('Xóa thành công'); }
+    catch (err: any) { toast.error(err.response?.data?.error || 'Xóa thất bại'); }
   };
 
   const resetClassForm = () => {
@@ -135,18 +142,30 @@ export default function AdminPage() {
   const handleSaveClassroom = async () => {
     if (!className || !selectedTeacher || !startTime || !endTime) { setClassFormError('Cần tên, GV, thời gian'); return; }
     setClassFormError('');
+    setClassFormLoading(true);
     try {
       const data = { name: className, description: classDesc, cameras, teacherId: selectedTeacher, studentIds: selectedStudents, startTime, endTime };
-      if (editingClassroom) await classroomAPI.update(editingClassroom._id, data);
-      else await classroomAPI.create(data as any);
+      if (editingClassroom) {
+        await classroomAPI.update(editingClassroom._id, data);
+        toast.success('Cập nhật lớp học thành công');
+      }
+      else {
+        await classroomAPI.create(data as any);
+        toast.success('Tạo lớp học mới thành công');
+      }
       const res = await classroomAPI.list(); setClassrooms(res.data.classrooms);
       setClassDialogOpen(false); resetClassForm();
-    } catch (err: any) { setClassFormError(err.response?.data?.error || 'Lỗi'); }
+    } catch (err: any) { 
+      setClassFormError(err.response?.data?.error || 'Lỗi');
+      toast.error(err.response?.data?.error || 'Lưu thất bại');
+    } finally {
+      setClassFormLoading(false);
+    }
   };
   const handleDeleteClassroom = async (id: string, name: string) => {
     if (!confirm(`Xóa "${name}"?`)) return;
-    try { await classroomAPI.delete(id); setClassrooms((p) => p.filter((c) => c._id !== id)); }
-    catch (err: any) { alert(err.response?.data?.error || 'Xóa thất bại'); }
+    try { await classroomAPI.delete(id); setClassrooms((p) => p.filter((c) => c._id !== id)); toast.success('Xóa thành công'); }
+    catch (err: any) { toast.error(err.response?.data?.error || 'Xóa thất bại'); }
   };
   const toggleStudent = (id: string) => setSelectedStudents((p) => p.includes(id) ? p.filter((s) => s !== id) : [...p, id]);
   const updateCamera = (i: number, f: string, v: string) => setCameras((p) => p.map((c, idx) => idx === i ? { ...c, [f]: v } : c));
@@ -430,7 +449,13 @@ export default function AdminPage() {
                           </div>
                           <DialogFooter>
                             <Button variant="outline" onClick={() => setClassDialogOpen(false)}>Hủy</Button>
-                            <Button onClick={handleSaveClassroom}>Lưu thay đổi</Button>
+                            <Button onClick={handleSaveClassroom} disabled={classFormLoading}>
+                              {classFormLoading ? (
+                                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Đang lưu...</>
+                              ) : (
+                                'Lưu thay đổi'
+                              )}
+                            </Button>
                           </DialogFooter>
                         </DialogContent>
                       </Dialog>

@@ -17,7 +17,7 @@ const PORT = process.env.PORT || 3001;
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    origin: true,
     credentials: true,
   }
 });
@@ -41,6 +41,14 @@ io.on('connection', (socket) => {
     io.to(`classroom_${data.classroomId}`).emit('hand_accepted', data);
   });
 
+  socket.on('complete_hand', (data) => {
+    io.to(`classroom_${data.classroomId}`).emit('hand_completed', data);
+  });
+
+  socket.on('student_ready_for_call', (data) => {
+    io.to(`classroom_${data.classroomId}`).emit('student_ready_for_call', data);
+  });
+
   socket.on('disconnect', () => {
     console.log('Socket disconnected:', socket.id);
   });
@@ -48,7 +56,7 @@ io.on('connection', (socket) => {
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  origin: true,
   credentials: true,
 }));
 app.use(express.json());

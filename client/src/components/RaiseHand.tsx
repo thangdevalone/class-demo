@@ -9,6 +9,7 @@ interface RaiseHandProps {
   classroomId: string;
   isTeacher: boolean;
   teacher: { _id: string; displayName: string; ermisUserId?: string };
+  onPendingCountChange?: (count: number) => void;
 }
 
 interface HandEntry {
@@ -17,6 +18,7 @@ interface HandEntry {
     _id: string;
     displayName: string;
     username: string;
+    ermisUserId?: string;
     avatar?: string;
   };
   timestamp: string;
@@ -24,13 +26,15 @@ interface HandEntry {
   dmChannelCid?: string;
 }
 
-export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHandProps) {
+export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCountChange }: RaiseHandProps) {
   const { user } = useAuth();
   const [hands, setHands] = useState<HandEntry[]>([]);
   const [myHand, setMyHand] = useState<HandEntry | null>(null);
   const [isRaising, setIsRaising] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const socketRef = useRef<Socket | null>(null);
+
+  const [initialFetchDone, setInitialFetchDone] = useState(false);
 
   // Fetch initial hand status
   const fetchHands = useCallback(async () => {
@@ -42,10 +46,32 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
         const res = await classroomAPI.getMyHand(classroomId);
         setMyHand(res.data.hand || null);
       }
+      setInitialFetchDone(true);
     } catch (err) {
       // Silent fail
+      setInitialFetchDone(true);
     }
   }, [classroomId, isTeacher]);
+
+  const initialCleanupDone = useRef(false);
+
+  useEffect(() => {
+    if (initialFetchDone && !initialCleanupDone.current) {
+      initialCleanupDone.current = true;
+      if (isTeacher) {
+        const accepted = hands.filter(h => h.status === 'accepted');
+        if (accepted.length > 0) {
+          console.log('Teacher reloaded, cleaning up dead accepted hands...');
+          accepted.forEach(hand => {
+            classroomAPI.completeHand(classroomId, hand.student._id).then(() => fetchHands());
+          });
+        }
+      } else if (!isTeacher && myHand?.status === 'accepted') {
+        console.log('Page reloaded while hand was accepted. Auto-cancelling...');
+        handleCancelHand();
+      }
+    }
+  }, [initialFetchDone, hands, myHand, isTeacher, classroomId]);
 
   // Connect to socket for real-time updates
   useEffect(() => {
@@ -73,6 +99,15 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
       if (!isTeacher && user?.username === data.studentErmisId) {
         setMyHand(prev => prev ? { ...prev, status: 'accepted' } : null);
         console.log('Hand accepted by teacher!');
+        window.sessionStorage.setItem('auto_accept_call', 'true');
+      }
+    });
+
+    socket.on('hand_completed', (data: any) => {
+      if (isTeacher) fetchHands();
+      if (!isTeacher && user?.username === data.studentErmisId) {
+        setMyHand(null);
+        console.log('Call completed by teacher!');
       }
     });
 
@@ -90,7 +125,6 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
       socketRef.current?.emit('raise_hand', { classroomId });
     } catch (err: any) {
       console.error('Raise hand error:', err);
-      alert(err.response?.data?.error || 'Không thể giơ tay');
     } finally {
       setIsRaising(false);
     }
@@ -112,20 +146,16 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
 
   // Teacher: Accept hand → will trigger DM call
   const handleAcceptHand = async (studentId: string, studentUsername: string) => {
+    setIsCancelling(true);
     try {
-      const dmChannelCid = ''; 
-      await classroomAPI.acceptHand(classroomId, studentId, dmChannelCid);
-      await fetchHands();
+      await classroomAPI.acceptHand(classroomId, studentId);
       
-      // Notify student and start call
+      // Notify student via socket
       socketRef.current?.emit('accept_hand', { classroomId, studentErmisId: studentUsername });
-      
-      // Initiate Ermis Call via event
-      window.dispatchEvent(new CustomEvent('start_dm_call', { 
-        detail: { studentErmisId: studentUsername } 
-      }));
     } catch (err: any) {
       console.error('Accept hand error:', err);
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -139,12 +169,23 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
     }
   };
 
+  // Teacher: Complete hand
+  const handleCompleteHand = async (studentId: string, studentUsername: string) => {
+    try {
+      await classroomAPI.completeHand(classroomId, studentId);
+      await fetchHands();
+      socketRef.current?.emit('complete_hand', { classroomId, studentErmisId: studentUsername });
+    } catch (err: any) {
+      console.error('Complete hand error:', err);
+    }
+  };
+
+
+
   // Student: When hand is accepted → initiate call
   useEffect(() => {
     if (!isTeacher && myHand?.status === 'accepted') {
       // Hand was accepted! Student should now initiate a call to the teacher
-      // This would use the ErmisCallProvider's createCall method
-      // For now, show a notification
       console.log('Hand accepted! Ready to call teacher.');
     }
   }, [isTeacher, myHand]);
@@ -159,7 +200,6 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
 
   // Helper: time ago
   const timeAgo = (timestamp: string) => {
-    // Just reference `tick` to ensure React re-evaluates this function
     const _forceUpdate = tick;
     const diff = Date.now() - new Date(timestamp).getTime();
     const seconds = Math.floor(diff / 1000);
@@ -171,6 +211,12 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
 
   const pendingHands = hands.filter((h) => h.status === 'pending');
   const acceptedHands = hands.filter((h) => h.status === 'accepted');
+
+  useEffect(() => {
+    if (isTeacher && onPendingCountChange) {
+      onPendingCountChange(pendingHands.length);
+    }
+  }, [isTeacher, pendingHands.length, onPendingCountChange]);
 
   // ==================== STUDENT VIEW ====================
   if (!isTeacher) {
@@ -206,23 +252,30 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
               variant="ghost"
               size="sm"
               className="h-8 text-amber-500 hover:bg-amber-500/20 hover:text-amber-400 px-2"
-              onClick={handleCancelHand}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCancelHand(); }}
               disabled={isCancelling}
             >
               {isCancelling ? '...' : <X className="h-4 w-4" />}
             </Button>
           </div>
         ) : myHand.status === 'accepted' ? (
-          <div className="flex flex-col gap-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3">
+          <div className="flex items-center justify-between rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3">
             <div className="flex items-center gap-3">
               <CheckCircle2 className="h-6 w-6 text-emerald-500" />
               <div className="flex flex-col">
-                <span className="text-sm font-semibold text-emerald-500">Giáo viên đã gọi bạn!</span>
-                <span className="text-[10px] text-emerald-500/70">Hãy nhấn nút bên dưới để kết nối thoại.</span>
+                <span className="text-sm font-semibold text-emerald-500">Giáo viên đã chấp nhận!</span>
+                <span className="text-[10px] text-emerald-500/70">Vui lòng bấm "Nghe máy" ở dưới khung chat...</span>
               </div>
             </div>
-            <Button className="w-full gap-2 bg-emerald-500 text-white hover:bg-emerald-600">
-              <PhoneCall className="h-4 w-4" /> Gọi giáo viên
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 text-emerald-600 hover:bg-emerald-500/20 hover:text-emerald-700 px-2"
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCancelHand(); }}
+              disabled={isCancelling}
+              title="Kết thúc / Hủy"
+            >
+              {isCancelling ? '...' : <X className="h-4 w-4" />}
             </Button>
           </div>
         ) : null}
@@ -263,7 +316,7 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
                   size="sm" 
                   variant="default" 
                   className="bg-emerald-500 hover:bg-emerald-600 font-medium"
-                  onClick={() => handleAcceptHand(hand.student._id, hand.student.username)}
+                  onClick={() => handleAcceptHand(hand.student._id, hand.student.ermisUserId || hand.student.username)}
                 >
                   Chấp nhận & Gọi
                 </Button>
@@ -291,6 +344,16 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
                   <span className="text-sm font-medium text-emerald-500">{hand.student.displayName}</span>
                   <span className="text-[10px] text-emerald-500/70">Đang trong cuộc gọi</span>
                 </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <Button 
+                  size="sm" 
+                  variant="outline" 
+                  className="h-7 border-emerald-200 text-emerald-600 hover:bg-emerald-50 text-xs px-2"
+                  onClick={() => handleCompleteHand(hand.student._id, hand.student.username)}
+                >
+                  Kết thúc
+                </Button>
               </div>
             </div>
           ))}
