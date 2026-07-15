@@ -45,9 +45,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         try {
           setToken(savedToken);
           setUser(JSON.parse(savedUser));
-          // Verify token is still valid
+          // Verify token is still valid and refresh Ermis token
           const res = await authAPI.me();
-          setUser(res.data.user);
+          const updatedUser = res.data.user;
+          setUser(updatedUser);
+          localStorage.setItem('class-demo-user', JSON.stringify(updatedUser));
         } catch {
           // Token expired or invalid
           localStorage.removeItem('class-demo-token');

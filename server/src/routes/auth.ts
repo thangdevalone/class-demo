@@ -6,7 +6,7 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
-async function generateErmisToken(userId: string, role: string) {
+export async function generateExternalErmisToken(userId: string, role: string) {
   try {
     const res = await axios.post('https://3003-dev-server-01.ermis.network/api/token', {
       user_id: userId,
@@ -18,7 +18,33 @@ async function generateErmisToken(userId: string, role: string) {
     });
     return res.data.token;
   } catch (error: any) {
-    console.error('Failed to generate Ermis token:', error?.response?.data || error?.message);
+    console.error('Failed to generate external Ermis token:', error?.response?.data || error?.message);
+    return null;
+  }
+}
+
+export async function generateErmisToken(userId: string, role: string) {
+  try {
+    // 1. Get the external JWT token
+    const externalToken = await generateExternalErmisToken(userId, role);
+    if (!externalToken) return null;
+
+    // 2. Exchange external token for Ermis SDK token
+    const apiKey = process.env.ERMIS_API_KEY || 'q9cxPBAgawX6OP6nXKHa89NZzoEuyqlf';
+    const baseUrl = process.env.ERMIS_BASE_URL || 'https://api-test.ermis.network';
+    
+    const exchangeRes = await axios.get(`${baseUrl}/uss/v1/get_token/external_auth?apikey=${apiKey}`, {
+      headers: {
+        Authorization: `Bearer ${externalToken}`
+      }
+    });
+
+    return {
+      token: exchangeRes.data.token,
+      userId: exchangeRes.data.user_id
+    };
+  } catch (error: any) {
+    console.error('Failed to exchange Ermis token:', error?.response?.data || error?.message);
     return null;
   }
 }
@@ -51,10 +77,10 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
     const secret = process.env.JWT_SECRET || 'class-demo-secret';
     const token = jwt.sign({ userId: user._id, role: user.role }, secret, { expiresIn: '7d' });
 
-    const ermisToken = await generateErmisToken(user.username, user.role);
-    if (ermisToken) {
-      user.ermisUserId = user.username;
-      user.ermisToken = ermisToken;
+    const ermisData = await generateErmisToken(user.username, user.role);
+    if (ermisData) {
+      user.ermisUserId = ermisData.userId;
+      user.ermisToken = ermisData.token;
       await user.save();
     }
 
@@ -104,10 +130,10 @@ router.post('/login', async (req: AuthRequest, res: Response): Promise<void> => 
       { expiresIn: '7d' },
     );
 
-    const ermisToken = await generateErmisToken(user.username, user.role);
-    if (ermisToken) {
-      user.ermisUserId = user.username;
-      user.ermisToken = ermisToken;
+    const ermisData = await generateErmisToken(user.username, user.role);
+    if (ermisData) {
+      user.ermisUserId = ermisData.userId;
+      user.ermisToken = ermisData.token;
       await user.save();
     }
 
@@ -132,10 +158,10 @@ router.post('/login', async (req: AuthRequest, res: Response): Promise<void> => 
 // GET /api/auth/me — get current user info
 router.get('/me', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const ermisToken = await generateErmisToken(req.user!.username, req.user!.role);
-    if (ermisToken && ermisToken !== req.user!.ermisToken) {
-      req.user!.ermisUserId = req.user!.username;
-      req.user!.ermisToken = ermisToken;
+    const ermisData = await generateErmisToken(req.user!.username, req.user!.role);
+    if (ermisData && ermisData.token !== req.user!.ermisToken) {
+      req.user!.ermisUserId = ermisData.userId;
+      req.user!.ermisToken = ermisData.token;
       await req.user!.save();
     }
 

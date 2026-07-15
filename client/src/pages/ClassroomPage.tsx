@@ -167,8 +167,8 @@ export default function ClassroomPage() {
         </main>
 
         {/* Right Sidebar (Chat & Raise Hand) */}
-        <aside className={`flex flex-col border-l border-slate-200 bg-white transition-all duration-300 ease-in-out ${chatCollapsed ? 'w-0 border-0 opacity-0' : 'w-80 opacity-100'}`}>
-          <div className="flex h-full flex-col overflow-hidden min-w-[320px]">
+        <aside className={`flex flex-col border-l border-slate-200 bg-white transition-all duration-300 ease-in-out ${chatCollapsed ? 'w-0 border-0 opacity-0' : 'w-[400px] opacity-100'}`}>
+          <div className="flex h-full flex-col overflow-hidden min-w-[400px]">
             {/* Raise Hand Module */}
             <div className="shrink-0 border-b border-slate-200 p-0">
               <RaiseHand classroomId={classroom._id} isTeacher={isTeacher} teacher={classroom.teacher} />

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { Classroom } from '../models/Classroom';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
+import { ermisChatService } from '../services/ErmisChatService';
 
 const router = Router();
 
@@ -139,10 +140,36 @@ router.post(
         startTime: new Date(startTime),
         endTime: new Date(endTime),
       });
+      
+      // Channel ID will be set after creation
 
       await classroom.save();
-      await classroom.populate('teacher', 'displayName username avatar role');
-      await classroom.populate('students', 'displayName username avatar role');
+      await classroom.populate('teacher', 'displayName username avatar role ermisUserId');
+      await classroom.populate('students', 'displayName username avatar role ermisUserId');
+
+      // Add to Ermis channel
+      try {
+        const teacher = classroom.teacher as any;
+        const students = classroom.students as any[];
+        
+        const memberIds = [];
+        if (teacher && teacher.ermisUserId) memberIds.push(teacher.ermisUserId);
+        students.forEach(s => {
+          if (s.ermisUserId) memberIds.push(s.ermisUserId);
+        });
+
+        const cid = await ermisChatService.createClassChannel(
+          classroom.name,
+          classroom.description,
+          memberIds
+        );
+        classroom.ermisChannelId = cid;
+        classroom.ermisChannelType = 'meeting';
+        await classroom.save();
+      } catch (chatError) {
+        console.error('Failed to create Ermis chat channel:', chatError);
+        // Do we fail classroom creation? Usually yes or log and proceed. We'll proceed for robustness.
+      }
 
       res.status(201).json({ classroom });
     } catch (error) {
@@ -233,6 +260,14 @@ router.post(
       classroom.students.push(req.user!._id);
       await classroom.save();
 
+      if (classroom.ermisChannelId && req.user?.ermisUserId) {
+        try {
+          await ermisChatService.addMembersToClass(classroom.ermisChannelId, [req.user.ermisUserId]);
+        } catch (chatError) {
+          console.error('Failed to add member to Ermis chat channel:', chatError);
+        }
+      }
+
       res.json({ message: 'Registered successfully' });
     } catch (error) {
       console.error('Register error:', error);
@@ -257,6 +292,14 @@ router.post(
         (s) => s.toString() !== req.user!._id.toString(),
       ) as any;
       await classroom.save();
+
+      if (classroom.ermisChannelId && req.user?.ermisUserId) {
+        try {
+          await ermisChatService.removeMembersFromClass(classroom.ermisChannelId, [req.user.ermisUserId]);
+        } catch (chatError) {
+          console.error('Failed to remove member from Ermis chat channel:', chatError);
+        }
+      }
 
       res.json({ message: 'Unregistered successfully' });
     } catch (error) {

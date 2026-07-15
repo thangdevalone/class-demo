@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { Loader2 } from 'lucide-react';
 import LoginPage from './pages/LoginPage';
 import ClassroomPage from './pages/ClassroomPage';
 import AdminPage from './pages/AdminPage';
@@ -16,9 +17,16 @@ function ProtectedRoute({
 
   if (isLoading) {
     return (
-      <div className="loading-screen">
-        <div className="loading-spinner" />
-        <p>Đang tải...</p>
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-slate-50/80 backdrop-blur-sm z-50">
+        <div className="relative flex items-center justify-center">
+          <div className="absolute h-16 w-16 animate-ping rounded-full bg-blue-400 opacity-20"></div>
+          <div className="rounded-full bg-white p-3 shadow-sm border border-slate-100 relative z-10">
+            <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+          </div>
+        </div>
+        <p className="mt-6 text-sm font-medium tracking-wide text-slate-500 animate-pulse">
+          Đang tải dữ liệu...
+        </p>
       </div>
     );
   }

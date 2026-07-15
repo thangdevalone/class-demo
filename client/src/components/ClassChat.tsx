@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { MessageSquare, AlertTriangle, Loader2, Send } from 'lucide-react';
+import { MessageSquare, AlertTriangle, Loader2, Send, Smile } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { EmojiPicker, EmojiPickerSearch, EmojiPickerContent } from '@/components/ui/emoji-picker';
 
 // Ermis SDK & React imports — these come from the local monorepo via file: protocol
 import { ErmisChat } from '@ermis-network/ermis-chat-sdk';
@@ -87,15 +88,44 @@ const MockChat = ({ userName }: { userName: string }) => {
   );
 };
 
+const pendingWatches = new Map<string, Promise<any>>();
+
 const ActiveChannelSetter = ({ channelId, channelType }: { channelId: string; channelType: string }) => {
   const { client, setActiveChannel } = useChatClient();
   
   useEffect(() => {
     if (channelId && client) {
-      const channel = client.channel(channelType || 'team', channelId);
-      channel.watch().then(() => {
+      const parts = channelId.split(':');
+      let actualType = channelType || 'meeting';
+      let actualId = channelId;
+      
+      if (parts.length > 1) {
+        actualType = parts[0];
+        actualId = parts.slice(1).join(':');
+      }
+
+      const channel = client.channel(actualType, actualId);
+      const channelKey = `${actualType}:${actualId}`;
+
+      if (channel.initialized) {
         setActiveChannel?.(channel);
-      });
+        return;
+      }
+
+      if (!pendingWatches.has(channelKey)) {
+        const watchPromise = channel.watch().then(() => {
+          setActiveChannel?.(channel);
+          pendingWatches.delete(channelKey);
+        }).catch((err) => {
+          console.error(err);
+          pendingWatches.delete(channelKey);
+        });
+        pendingWatches.set(channelKey, watchPromise);
+      } else {
+        pendingWatches.get(channelKey)?.then(() => {
+          setActiveChannel?.(channel);
+        });
+      }
     }
   }, [channelId, channelType, client, setActiveChannel]);
   
@@ -116,25 +146,64 @@ export default function ClassChat({ classroomId, ermisChannelId, ermisChannelTyp
     }
 
     let mounted = true;
+    let localClient: any = null;
+
     const initChat = async () => {
+      setError(null);
       try {
-        const client = ErmisChat.getInstance(API_KEY, PROJECT_ID, BASE_URL);
-        await client.connectUser({ id: user.ermisUserId! }, user.ermisToken!);
-        
-        if (!mounted) return;
-        setChatClient(client);
-        
-        // Set active channel if ermisChannelId is provided
-        if (ermisChannelId) {
-          const channel = client.channel(ermisChannelType || 'team', ermisChannelId);
-          await channel.watch();
+        localClient = ErmisChat.getInstance(API_KEY, PROJECT_ID, BASE_URL, { endUserApiMode: 'v1' });
+
+        // Override getBatchUsers to use GET /uss/v1/users as the backend doesn't support POST /users/batch
+        localClient.getBatchUsers = async (userIds: string[]) => {
+          if (!userIds || userIds.length === 0) return [];
           try {
-            await channel.addMembers([user.ermisUserId!]);
+            const url = `${BASE_URL}/uss/v1/users?project_id=${PROJECT_ID}&page=1&page_size=10000`;
+            const res = await fetch(url, {
+              headers: {
+                'Authorization': `Bearer ${user.ermisToken}`
+              }
+            });
+            const raw = await res.json();
+            const items = Array.isArray(raw) ? raw : (raw.users || raw.data || raw.items || []);
+            const users = items.map((u: any) => ({
+              id: u.id || u._id || u.user_id,
+              name: u.display_name || u.name || u.username || u.id,
+              role: u.role || 'user',
+              image: u.avatar_url || u.avatar || '',
+              ...u
+            }));
+            if (typeof localClient._upsertUsers === 'function') {
+              localClient._upsertUsers(users);
+            }
+            return users;
           } catch (e) {
-            console.log('User already a member or no permission to add members', e);
+            console.error('Failed to getBatchUsers via GET', e);
+            return [];
           }
-          // Active channel will be set by ActiveChannelSetter component
+        };
+        if (localClient.userID !== user.ermisUserId) {
+          if (localClient.userID) {
+            await localClient.disconnectUser();
+          }
+          await localClient.connectUser(
+            {
+              id: user.ermisUserId!,
+              name: user.displayName,
+              role: user.role,
+            },
+            user.ermisToken!
+          );
+          
+
         }
+        setChatClient(localClient);
+        
+        if (!mounted) {
+          localClient.disconnectUser();
+          return;
+        }
+        
+        // ActiveChannelSetter will handle channel initialization and watch
 
         setChatReady(true);
       } catch (err: any) {
@@ -147,11 +216,11 @@ export default function ClassChat({ classroomId, ermisChannelId, ermisChannelTyp
 
     return () => {
       mounted = false;
-      if (chatClient) {
-        chatClient.disconnectUser();
+      if (localClient) {
+        localClient.disconnectUser();
       }
     };
-  }, [user, ermisChannelId, ermisChannelType]);
+  }, [user?.ermisUserId, user?.ermisToken, ermisChannelId, ermisChannelType]);
 
   // Handle DM Call triggered from RaiseHand (Teacher accepting a student)
   useEffect(() => {
@@ -234,15 +303,43 @@ export default function ClassChat({ classroomId, ermisChannelId, ermisChannelTyp
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-700">Chat lớp học</span>
           </div>
 
-          <div className="flex-1 overflow-hidden relative [&_.str-chat]:h-full [&_.str-chat]:bg-transparent [&_.str-chat__main-panel]:bg-transparent [&_.str-chat__list]:bg-transparent">
-            <Channel>
-              <div className="flex h-full flex-col">
-                <div className="flex-1 overflow-y-auto">
-                  <VirtualMessageList />
+          <div className="flex-1 overflow-hidden relative [&_.ermis-channel]:h-full [&_.ermis-channel]:bg-transparent [&_.ermis-message-list]:flex-1 [&_.ermis-message-list]:flex [&_.ermis-message-list]:flex-col [&_.ermis-message-list]:overflow-hidden [&_.ermis-message-list__vlist]:flex-1 [&_.ermis-message-list__vlist]:overflow-y-auto">
+            <Channel 
+              className="flex h-full flex-col w-full"
+              EmptyStateIndicator={() => (
+                <div className="flex h-full items-center justify-center bg-slate-50">
+                  <Loader2 className="h-6 w-6 animate-spin text-slate-300" />
                 </div>
-                <div className="shrink-0 border-t border-slate-200 bg-slate-50 p-2">
-                  <MessageInput placeholder="Nhập tin nhắn..." />
-                </div>
+              )}
+            >
+              <div className="flex-1 overflow-hidden flex flex-col">
+                <VirtualMessageList includeHiddenMessages={false} />
+              </div>
+              <div className="shrink-0 border-t border-slate-200 bg-slate-50 p-2">
+                <MessageInput 
+                  placeholder="Nhập tin nhắn..." 
+                  VoiceRecordButtonComponent={() => null}
+                  EmojiButtonComponent={({ active, onClick }) => (
+                    <button
+                      type="button"
+                      onClick={onClick}
+                      className={`p-2 text-slate-400 hover:text-slate-600 transition-colors ${active ? 'text-blue-500' : ''}`}
+                    >
+                      <Smile className="h-5 w-5" />
+                    </button>
+                  )}
+                  EmojiPickerComponent={({ onSelect, onClose }) => (
+                    <div className="absolute bottom-full right-0 mb-2 shadow-xl border border-slate-200 bg-white rounded-md z-50 h-[350px]">
+                      <EmojiPicker onEmojiSelect={(em: any) => {
+                        onSelect({ id: em.id || em.emoji, name: em.name || em.emoji, native: em.emoji });
+                        onClose();
+                      }}>
+                        <EmojiPickerSearch />
+                        <EmojiPickerContent />
+                      </EmojiPicker>
+                    </div>
+                  )}
+                />
               </div>
             </Channel>
           </div>

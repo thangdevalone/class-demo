@@ -149,8 +149,18 @@ export default function RaiseHand({ classroomId, isTeacher, teacher }: RaiseHand
     }
   }, [isTeacher, myHand]);
 
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    // Re-render every 5 seconds to update relative time
+    const interval = setInterval(() => setTick((t) => t + 1), 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Helper: time ago
   const timeAgo = (timestamp: string) => {
+    // Just reference `tick` to ensure React re-evaluates this function
+    const _forceUpdate = tick;
     const diff = Date.now() - new Date(timestamp).getTime();
     const seconds = Math.floor(diff / 1000);
     if (seconds < 60) return `${seconds}s trước`;
