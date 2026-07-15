@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, LogOut, MessageSquare, MonitorPlay, X } from 'lucide-react';
+import { ArrowLeft, LogOut, MonitorPlay, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import Draggable from 'react-draggable';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -36,7 +36,6 @@ export default function ClassroomPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [chatCollapsed, setChatCollapsed] = useState(false);
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
 
   const fetchClassroom = useCallback(async () => {
@@ -113,15 +112,6 @@ export default function ClassroomPage() {
             <MonitorPlay className="h-4 w-4" /> Bảng trắng
           </Button>
 
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`gap-2 text-xs font-medium transition-colors ${chatCollapsed ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-100' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
-            onClick={() => setChatCollapsed(!chatCollapsed)}
-          >
-            <MessageSquare className="h-4 w-4" /> Chat lớp học
-          </Button>
-
           <Badge variant="outline" className={`border-0 text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 ${isTeacher ? 'bg-blue-500/10 text-blue-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
             {isTeacher ? 'Giáo viên' : 'Học sinh'}
           </Badge>
@@ -166,7 +156,7 @@ export default function ClassroomPage() {
         </main>
 
         {/* Right Sidebar (Chat) */}
-        <aside className={`flex flex-col border-l border-slate-200 bg-white transition-all duration-300 ease-in-out ${chatCollapsed ? 'w-0 border-0 opacity-0' : 'w-[420px] opacity-100'}`}>
+        <aside className="flex w-[420px] flex-col border-l border-slate-200 bg-white">
           <div className="flex h-full flex-col overflow-hidden min-w-[420px]">
             {/* Containers */}
             <div className="flex-1 overflow-hidden flex flex-col">
@@ -175,6 +165,9 @@ export default function ClassroomPage() {
                 ermisChannelId={classroom.ermisChannelId} 
                 ermisChannelType={classroom.ermisChannelType} 
                 hideChat={false}
+                isTeacher={isTeacher}
+                teacher={classroom.teacher}
+                students={classroom.students}
               />
             </div>
           </div>

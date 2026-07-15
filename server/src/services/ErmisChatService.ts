@@ -32,7 +32,7 @@ export class ErmisChatService {
           role: 'admin',
         },
         externalToken,
-        true // Maintain server-side persistent connection if applicable
+        { externalAuth: true } // Maintain server-side persistent connection if applicable
       );
 
       return { client, user };

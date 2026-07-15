@@ -4,11 +4,24 @@ import { useAuth } from '../context/AuthContext';
 import { classroomAPI } from '../services/api';
 import { Button } from '@/components/ui/button';
 import { Hand, CheckCircle2, PhoneCall, X, HandHeart } from 'lucide-react';
+import { useChatClient, useCallContext } from '@ermis-network/ermis-chat-react';
+import type { Channel } from '@ermis-network/ermis-chat-sdk';
+
+const CALL_USER_NAME_KEY = 'class-demo-ermis-user-name:';
+
+function rememberCallUserName(userId?: string, name?: string) {
+  if (!userId || !name || name === userId) return;
+  try {
+    localStorage.setItem(`${CALL_USER_NAME_KEY}${userId}`, name);
+  } catch {
+    // Ignore storage errors; call UI can still fall back to SDK user data.
+  }
+}
 
 interface RaiseHandProps {
   classroomId: string;
   isTeacher: boolean;
-  teacher: { _id: string; displayName: string; ermisUserId?: string };
+  teacher: { _id?: string; displayName?: string; ermisUserId?: string };
   onPendingCountChange?: (count: number) => void;
 }
 
@@ -33,8 +46,19 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
   const [isRaising, setIsRaising] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const socketRef = useRef<Socket | null>(null);
+  const activeCallRef = useRef<{ studentId: string; studentErmisId: string } | null>(null);
+  const pendingTeacherCallRef = useRef<{ studentId: string; studentErmisId: string; dmChannelCid: string } | null>(null);
+  const watchedDirectChannelCidsRef = useRef<Set<string>>(new Set());
+  const acceptingInviteByCidRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const studentReadyCidsRef = useRef<Set<string>>(new Set());
+  const teacherStartedCallCidsRef = useRef<Set<string>>(new Set());
+  const completedHandKeysRef = useRef<Set<string>>(new Set());
+  const lastCallStatusRef = useRef<string>('');
+  const { client } = useChatClient();
+  const { createCall, endCall, callStatus, callNode, resetCall } = useCallContext();
 
   const [initialFetchDone, setInitialFetchDone] = useState(false);
+
 
   // Fetch initial hand status
   const fetchHands = useCallback(async () => {
@@ -72,7 +96,100 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
       }
     }
   }, [initialFetchDone, hands, myHand, isTeacher, classroomId]);
+  const splitCid = (cid: string) => {
+    const separatorIndex = cid.indexOf(':');
+    if (separatorIndex === -1) return { type: 'messaging', id: cid };
+    return {
+      type: cid.slice(0, separatorIndex),
+      id: cid.slice(separatorIndex + 1),
+    };
+  };
 
+  const watchDirectChannelByCid = useCallback(async (cid: string) => {
+    const { type, id } = splitCid(cid);
+    const channel = client.channel(type, id) as Channel;
+
+    if (!watchedDirectChannelCidsRef.current.has(cid) && !(channel as any).initialized) {
+      await channel.watch({ messages: { limit: 1, include_hidden_messages: true } } as any);
+      watchedDirectChannelCidsRef.current.add(cid);
+    }
+
+    return channel;
+  }, [client]);
+
+  const getMemberRole = (channel: Channel, userId?: string) => {
+    if (!userId) return undefined;
+    return (((channel as any).state?.members?.[userId]?.channel_role)
+      || ((channel as any).state?.membership?.user_id === userId
+        ? (channel as any).state?.membership?.channel_role
+        : undefined)) as string | undefined;
+  };
+
+  const isInactiveInviteRole = (role?: string) => role === 'pending' || role === 'skipped';
+
+  const acceptDirectInviteIfNeeded = useCallback(async (cid: string) => {
+    if (!client?.userID) return false;
+
+    const inFlight = acceptingInviteByCidRef.current.get(cid);
+    if (inFlight) return inFlight;
+
+    const promise = (async () => {
+      const channel = await watchDirectChannelByCid(cid);
+      const membershipRole = getMemberRole(channel, client.userID)
+        || ((channel as any).state?.membership?.channel_role as string | undefined);
+
+      if (!membershipRole || isInactiveInviteRole(membershipRole)) {
+        try {
+          await channel.acceptInvite('accept');
+        } catch (err: any) {
+          const message = String(err?.response?.data?.message || err?.message || '').toLowerCase();
+          if (!message.includes('already') && !message.includes('accepted')) {
+            throw err;
+          }
+        }
+      }
+
+      return true;
+    })().finally(() => {
+      acceptingInviteByCidRef.current.delete(cid);
+    });
+
+    acceptingInviteByCidRef.current.set(cid, promise);
+    return promise;
+  }, [client, watchDirectChannelByCid]);
+
+  const startTeacherCallWhenReady = useCallback(async (studentId: string, studentErmisId: string, dmChannelCid: string) => {
+    if (!callNode) {
+      throw new Error('Call node is not ready');
+    }
+    if (teacherStartedCallCidsRef.current.has(dmChannelCid)) return;
+
+    teacherStartedCallCidsRef.current.add(dmChannelCid);
+    activeCallRef.current = { studentId, studentErmisId };
+
+    try {
+      await createCall('audio', dmChannelCid);
+    } catch (err) {
+      teacherStartedCallCidsRef.current.delete(dmChannelCid);
+      activeCallRef.current = null;
+      throw err;
+    }
+  }, [callNode, createCall]);
+
+  const emitStudentReadyForCall = useCallback(async (dmChannelCid: string, studentErmisId: string, teacherErmisId?: string) => {
+    if (!dmChannelCid || studentReadyCidsRef.current.has(dmChannelCid)) return;
+
+    const accepted = await acceptDirectInviteIfNeeded(dmChannelCid);
+    if (!accepted || studentReadyCidsRef.current.has(dmChannelCid)) return;
+
+    studentReadyCidsRef.current.add(dmChannelCid);
+    socketRef.current?.emit('student_ready_for_call', {
+      classroomId,
+      studentErmisId,
+      teacherErmisId,
+      dmChannelCid,
+    });
+  }, [acceptDirectInviteIfNeeded, classroomId]);
   // Connect to socket for real-time updates
   useEffect(() => {
     fetchHands();
@@ -96,16 +213,41 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
 
     socket.on('hand_accepted', (data: any) => {
       if (isTeacher) fetchHands();
-      if (!isTeacher && user?.username === data.studentErmisId) {
-        setMyHand(prev => prev ? { ...prev, status: 'accepted' } : null);
-        console.log('Hand accepted by teacher!');
-        window.sessionStorage.setItem('auto_accept_call', 'true');
+      if (!isTeacher && (user?.ermisUserId === data.studentErmisId || user?.username === data.studentErmisId)) {
+        setMyHand(prev => prev ? { ...prev, status: 'accepted', dmChannelCid: data.dmChannelCid || prev.dmChannelCid } : null);
+        console.log('Hand accepted by teacher. Auto-accepting direct invite...');
+
+        if (data.dmChannelCid) {
+          emitStudentReadyForCall(data.dmChannelCid, data.studentErmisId, data.teacherErmisId)
+            .catch((err) => console.error('Auto accept direct invite error:', err));
+        }
       }
     });
 
+    socket.on('student_ready_for_call', (data: any) => {
+      if (!isTeacher) return;
+      const pending = pendingTeacherCallRef.current;
+      if (!pending) return;
+      if (pending.studentErmisId !== data.studentErmisId || pending.dmChannelCid !== data.dmChannelCid) return;
+
+      pendingTeacherCallRef.current = null;
+      startTeacherCallWhenReady(pending.studentId, pending.studentErmisId, pending.dmChannelCid).catch((err) => {
+        activeCallRef.current = null;
+        console.error('Start call after student ready error:', err);
+      });
+    });
     socket.on('hand_completed', (data: any) => {
+      resetCall?.();
+      activeCallRef.current = null;
+      pendingTeacherCallRef.current = null;
+      teacherStartedCallCidsRef.current.clear();
+      studentReadyCidsRef.current.clear();
       if (isTeacher) fetchHands();
-      if (!isTeacher && user?.username === data.studentErmisId) {
+      if (!isTeacher && (user?.ermisUserId === data.studentErmisId || user?.username === data.studentErmisId)) {
+        activeCallRef.current = null;
+        pendingTeacherCallRef.current = null;
+        teacherStartedCallCidsRef.current.clear();
+        studentReadyCidsRef.current.clear();
         setMyHand(null);
         console.log('Call completed by teacher!');
       }
@@ -114,12 +256,14 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
     return () => {
       socket.disconnect();
     };
-  }, [fetchHands, classroomId, isTeacher, user?.username]);
+  }, [classroomId, emitStudentReadyForCall, fetchHands, isTeacher, resetCall, startTeacherCallWhenReady, user?.ermisUserId, user?.username]);
 
   // Student: Raise hand
   const handleRaiseHand = async () => {
     setIsRaising(true);
     try {
+      studentReadyCidsRef.current.clear();
+      completedHandKeysRef.current.clear();
       await classroomAPI.raiseHand(classroomId);
       await fetchHands();
       socketRef.current?.emit('raise_hand', { classroomId });
@@ -134,6 +278,8 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
   const handleCancelHand = async () => {
     setIsCancelling(true);
     try {
+      studentReadyCidsRef.current.clear();
+      completedHandKeysRef.current.clear();
       await classroomAPI.cancelHand(classroomId);
       setMyHand(null);
       socketRef.current?.emit('cancel_hand', { classroomId });
@@ -143,17 +289,68 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
       setIsCancelling(false);
     }
   };
+  const getDirectChannelMemberIds = (channel: Channel) => {
+    const stateMembers = Object.keys((channel as any).state?.members || {});
+    if (stateMembers.length > 0) return stateMembers;
+    const dataMembers = ((channel as any).data?.members || []) as any[];
+    return dataMembers.map((member) => member.user_id || member.user?.id || member).filter(Boolean);
+  };
 
-  // Teacher: Accept hand → will trigger DM call
-  const handleAcceptHand = async (studentId: string, studentUsername: string) => {
+  const getOrCreateDirectChannel = useCallback(async (studentErmisId: string) => {
+    if (!client?.userID) {
+      throw new Error('Chat client is not ready for calls');
+    }
+
+    const memberIds = [client.userID, studentErmisId];
+    const existingChannel = Object.values((client as any).activeChannels || {}).find((channel: any) => {
+      if (channel.type !== 'messaging') return false;
+      const ids = getDirectChannelMemberIds(channel);
+      return ids.length === 2 && memberIds.every((id) => ids.includes(id));
+    }) as Channel | undefined;
+
+    if (existingChannel?.cid) {
+      if (!(existingChannel as any).initialized) {
+        await existingChannel.watch({ messages: { limit: 1, include_hidden_messages: true } } as any).then(() => watchedDirectChannelCidsRef.current.add(existingChannel.cid)).catch(() => undefined);
+      }
+      return existingChannel;
+    }
+
+    let dmChannel = client.channel('messaging', { members: memberIds } as any) as Channel;
+    const response = await dmChannel.create() as any;
+    if (response?.channel?.id) {
+      dmChannel = client.channel('messaging', response.channel.id) as Channel;
+    }
+    await dmChannel.watch({ messages: { limit: 1, include_hidden_messages: true } } as any);
+    watchedDirectChannelCidsRef.current.add(dmChannel.cid);
+    return dmChannel;
+  }, [client]);
+  // Teacher: Accept hand -> create a direct audio call after the student auto-accepts the DM invite
+  const handleAcceptHand = async (studentId: string, studentErmisId?: string, studentName?: string) => {
+    if (!studentErmisId) {
+      console.error('Cannot start call: student does not have an Ermis user id');
+      return;
+    }
+
     setIsCancelling(true);
     try {
-      await classroomAPI.acceptHand(classroomId, studentId);
-      
-      // Notify student via socket
-      socketRef.current?.emit('accept_hand', { classroomId, studentErmisId: studentUsername });
+      rememberCallUserName(studentErmisId, studentName);
+      rememberCallUserName(teacher.ermisUserId, teacher.displayName);
+      const dmChannel = await getOrCreateDirectChannel(studentErmisId);
+      pendingTeacherCallRef.current = { studentId, studentErmisId, dmChannelCid: dmChannel.cid };
+
+      await classroomAPI.acceptHand(classroomId, studentId, dmChannel.cid);
+      await fetchHands();
+
+      socketRef.current?.emit('accept_hand', {
+        classroomId,
+        studentErmisId,
+        dmChannelCid: dmChannel.cid,
+        teacherErmisId: client.userID,
+      });
     } catch (err: any) {
-      console.error('Accept hand error:', err);
+      activeCallRef.current = null;
+      pendingTeacherCallRef.current = null;
+      console.error('Accept hand / prepare call error:', err);
     } finally {
       setIsCancelling(false);
     }
@@ -169,27 +366,111 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
     }
   };
 
+  const completeAcceptedHand = useCallback(async (studentId: string, studentErmisId: string) => {
+    const key = `${classroomId}:${studentId}`;
+    if (completedHandKeysRef.current.has(key)) return;
+
+    completedHandKeysRef.current.add(key);
+    activeCallRef.current = null;
+    pendingTeacherCallRef.current = null;
+    teacherStartedCallCidsRef.current.clear();
+    studentReadyCidsRef.current.clear();
+
+    try {
+      socketRef.current?.emit('complete_hand', { classroomId, studentErmisId });
+      await classroomAPI.completeHand(classroomId, studentId);
+      if (isTeacher) {
+        await fetchHands();
+      } else {
+        setMyHand(null);
+      }
+    } catch (err) {
+      completedHandKeysRef.current.delete(key);
+      throw err;
+    }
+  }, [classroomId, fetchHands, isTeacher]);
+
+  const getMyStudentId = () => {
+    const handStudent = (myHand as any)?.student;
+    if (typeof handStudent === 'string') return handStudent;
+    return handStudent?._id || user?.id;
+  };
+
+  const handleStudentEndAcceptedHand = async () => {
+    if (!myHand || myHand.status !== 'accepted') return;
+    setIsCancelling(true);
+    try {
+      if (callStatus) {
+        await endCall().catch((err: any) => console.error('End student call error:', err));
+      }
+      const studentId = getMyStudentId();
+      if (studentId) {
+        await completeAcceptedHand(studentId, user?.ermisUserId || user?.username || studentId);
+      } else {
+        setMyHand(null);
+      }
+    } catch (err: any) {
+      console.error('Complete student hand error:', err);
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
   // Teacher: Complete hand
   const handleCompleteHand = async (studentId: string, studentUsername: string) => {
     try {
-      await classroomAPI.completeHand(classroomId, studentId);
-      await fetchHands();
-      socketRef.current?.emit('complete_hand', { classroomId, studentErmisId: studentUsername });
+      if (callStatus) {
+        await endCall().catch((err: any) => console.error('End teacher call error:', err));
+      }
+      await completeAcceptedHand(studentId, studentUsername);
     } catch (err: any) {
       console.error('Complete hand error:', err);
     }
   };
 
 
+  useEffect(() => {
+    const previousStatus = lastCallStatusRef.current;
+    const callJustCleared = Boolean(previousStatus) && !callStatus;
 
-  // Student: When hand is accepted → initiate call
+    if (callJustCleared && isTeacher && activeCallRef.current) {
+      const completedCall = activeCallRef.current;
+      completeAcceptedHand(completedCall.studentId, completedCall.studentErmisId)
+        .catch((err) => console.error('Auto complete teacher hand error:', err));
+    }
+
+    if (callJustCleared && !isTeacher && myHand?.status === 'accepted') {
+      const studentId = getMyStudentId();
+      if (studentId) {
+        completeAcceptedHand(studentId, user?.ermisUserId || user?.username || studentId)
+          .catch((err) => console.error('Auto complete student hand error:', err));
+      } else {
+        setMyHand(null);
+      }
+    }
+
+    lastCallStatusRef.current = callStatus || '';
+  }, [callStatus, completeAcceptedHand, isTeacher, myHand, user?.ermisUserId, user?.username]);
+  // Student: When hand is accepted -> wait for the incoming teacher call
   useEffect(() => {
     if (!isTeacher && myHand?.status === 'accepted') {
-      // Hand was accepted! Student should now initiate a call to the teacher
-      console.log('Hand accepted! Ready to call teacher.');
+      console.log('Hand accepted! Waiting for teacher call.');
     }
   }, [isTeacher, myHand]);
 
+  useEffect(() => {
+    if (isTeacher || myHand?.status !== 'accepted' || !myHand.dmChannelCid || !user?.ermisUserId) return;
+
+    let cancelled = false;
+    emitStudentReadyForCall(myHand.dmChannelCid, user.ermisUserId, teacher.ermisUserId)
+      .catch((err) => {
+        if (!cancelled) console.error('Auto accept direct invite from hand state error:', err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [classroomId, emitStudentReadyForCall, isTeacher, myHand?.dmChannelCid, myHand?.status, teacher.ermisUserId, user?.ermisUserId]);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -271,9 +552,9 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
               variant="ghost"
               size="sm"
               className="h-8 text-emerald-600 hover:bg-emerald-500/20 hover:text-emerald-700 px-2"
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCancelHand(); }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleStudentEndAcceptedHand(); }}
               disabled={isCancelling}
-              title="Kết thúc / Hủy"
+              title="Kết thúc"
             >
               {isCancelling ? '...' : <X className="h-4 w-4" />}
             </Button>
@@ -316,7 +597,7 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
                   size="sm" 
                   variant="default" 
                   className="bg-emerald-500 hover:bg-emerald-600 font-medium"
-                  onClick={() => handleAcceptHand(hand.student._id, hand.student.ermisUserId || hand.student.username)}
+                  onClick={() => handleAcceptHand(hand.student._id, hand.student.ermisUserId, hand.student.displayName)}
                 >
                   Chấp nhận & Gọi
                 </Button>
@@ -350,7 +631,7 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
                   size="sm" 
                   variant="outline" 
                   className="h-7 border-emerald-200 text-emerald-600 hover:bg-emerald-50 text-xs px-2"
-                  onClick={() => handleCompleteHand(hand.student._id, hand.student.username)}
+                  onClick={() => handleCompleteHand(hand.student._id, hand.student.ermisUserId || hand.student.username)}
                 >
                   Kết thúc
                 </Button>

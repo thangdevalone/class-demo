@@ -394,7 +394,7 @@ router.post('/:id/complete-hand/:studentId', authorize('teacher', 'admin', 'stud
 // GET /api/classrooms/:id/hands
 router.get('/:id/hands', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const classroom = await Classroom.findById(req.params.id).populate('raiseHandQueue.student', 'displayName username avatar');
+    const classroom = await Classroom.findById(req.params.id).populate('raiseHandQueue.student', 'displayName username avatar ermisUserId');
     if (!classroom) { res.status(404).json({ error: 'Classroom not found' }); return; }
     const activeHands = classroom.raiseHandQueue.filter((h) => h.status === 'pending' || h.status === 'accepted');
     res.json({ hands: activeHands });
