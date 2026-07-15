@@ -43,6 +43,8 @@ export const classroomAPI = {
 
   get: (id: string) => api.get(`/classrooms/${id}`),
 
+  ensureChatMembership: (classroomId: string) =>
+    api.post(`/classrooms/${classroomId}/ensure-chat-membership`),
   create: (data: {
     name: string;
     description?: string;

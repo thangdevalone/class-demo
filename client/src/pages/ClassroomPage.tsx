@@ -2,7 +2,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, LogOut, MonitorPlay, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import Draggable from 'react-draggable';
+import Draggable, { DraggableCore } from 'react-draggable';
 import { useNavigate, useParams } from 'react-router-dom';
 import CameraPanel from '../components/CameraPanel';
 import ClassChat from '../components/ClassChat';
@@ -133,12 +133,24 @@ export default function ClassroomPage() {
           {/* Draggable Whiteboard */}
           {whiteboardOpen && (
             // @ts-expect-error react-draggable types are not fully compatible with React 18
-            <Draggable handle=".whiteboard-drag-handle" bounds="parent">
+            <DraggableCore
+              handle=".whiteboard-drag-handle"
+              onDrag={(e, data) => {
+                const node = document.getElementById('whiteboard-container');
+                if (node) {
+                  const currentTop = parseInt(node.style.top || '16', 10);
+                  const currentLeft = parseInt(node.style.left || '16', 10);
+                  node.style.top = `${currentTop + data.deltaY}px`;
+                  node.style.left = `${currentLeft + data.deltaX}px`;
+                }
+              }}
+            >
               <div
-                className="absolute top-4 left-4 z-50 flex flex-col rounded-xl overflow-hidden shadow-2xl border border-slate-200 bg-white resize"
-                style={{ width: 600, height: 450, minWidth: 200, minHeight: 200, maxWidth: '90%', maxHeight: '90%' }}
+                id="whiteboard-container"
+                className="absolute z-50 flex flex-col rounded-xl overflow-hidden shadow-2xl border border-slate-200 bg-white resize"
+                style={{ top: '16px', left: '16px', width: 600, height: 450, minWidth: 200, minHeight: 200, maxWidth: '90%', maxHeight: '90%' }}
               >
-                <div className="whiteboard-drag-handle flex items-center justify-between bg-slate-100 border-b border-slate-200 p-2 cursor-move text-slate-700">
+                <div className="whiteboard-drag-handle flex items-center justify-between bg-slate-100 border-b border-slate-200 p-2 cursor-move text-slate-700 select-none">
                   <div className="flex items-center gap-2">
                     <MonitorPlay className="h-4 w-4" />
                     <span className="text-xs font-semibold">Ghi chú (kéo thả góc phải dưới để đổi cỡ)</span>
@@ -151,7 +163,7 @@ export default function ClassroomPage() {
                   <Whiteboard classroomId={classroom._id} />
                 </div>
               </div>
-            </Draggable>
+            </DraggableCore>
           )}
         </main>
 

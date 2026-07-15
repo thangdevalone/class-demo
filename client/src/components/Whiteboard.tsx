@@ -32,6 +32,9 @@ export default function Whiteboard({ classroomId }: WhiteboardProps) {
           elements: parsed.elements || [],
           appState: {
             ...parsed.appState,
+            theme: 'light',
+            viewBackgroundColor: '#ffffff',
+            currentItemStrokeColor: '#000000',
             collaborators: new Map(),
           },
         });
@@ -39,8 +42,9 @@ export default function Whiteboard({ classroomId }: WhiteboardProps) {
         setInitialData({
           elements: [],
           appState: {
-            viewBackgroundColor: '#1a1a2e',
-            theme: 'dark',
+            viewBackgroundColor: '#ffffff',
+            theme: 'light',
+            currentItemStrokeColor: '#000000',
           },
         });
       }
@@ -48,8 +52,9 @@ export default function Whiteboard({ classroomId }: WhiteboardProps) {
       setInitialData({
         elements: [],
         appState: {
-          viewBackgroundColor: '#1a1a2e',
-          theme: 'dark',
+          viewBackgroundColor: '#ffffff',
+          theme: 'light',
+          currentItemStrokeColor: '#000000',
         },
       });
     }
@@ -100,6 +105,20 @@ export default function Whiteboard({ classroomId }: WhiteboardProps) {
     }
   };
 
+  const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
+
+  useEffect(() => {
+    if (excalidrawAPI) {
+      excalidrawAPI.updateScene({
+        appState: {
+          viewBackgroundColor: '#ffffff',
+          theme: 'light',
+          currentItemStrokeColor: '#000000',
+        },
+      });
+    }
+  }, [excalidrawAPI]);
+
   if (!initialData) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-slate-50">
@@ -131,18 +150,22 @@ export default function Whiteboard({ classroomId }: WhiteboardProps) {
       </div>
 
       <div className="flex-1 relative overflow-hidden bg-white">
-        <Excalidraw
-          initialData={initialData}
-          onChange={handleChange}
-          UIOptions={{
-            canvasActions: {
-              loadScene: false,
-              saveToActiveFile: false,
-              toggleTheme: false,
-              export: false,
-            },
-          }}
-        />
+        <div className="absolute inset-0">
+          <Excalidraw
+            excalidrawAPI={(api) => setExcalidrawAPI(api)}
+            theme="light"
+            initialData={initialData}
+            onChange={handleChange}
+            UIOptions={{
+              canvasActions: {
+                loadScene: false,
+                saveToActiveFile: false,
+                toggleTheme: false,
+                export: false,
+              },
+            }}
+          />
+        </div>
       </div>
     </div>
   );

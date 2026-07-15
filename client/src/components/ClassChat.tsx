@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/button';
 import { AlertTriangle, Loader2, MessageSquare, Mic, MicOff, Phone, PhoneOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { classroomAPI } from '../services/api';
 import RaiseHand from './RaiseHand';
 
 // Ermis SDK & React imports
@@ -58,12 +59,25 @@ function MockChat({ userName }: { userName: string }) {
   );
 }
 
+function getErmisErrorCode(err: any) {
+  return err?.response?.data?.ermis_code || err?.ermis_code;
+}
+
+function getErmisErrorMessage(err: any) {
+  return String(err?.response?.data?.message || err?.message || '').toLowerCase();
+}
+
 function isInviteRequiredError(err: any) {
-  const code = err?.response?.data?.ermis_code || err?.ermis_code;
-  const message = String(err?.response?.data?.message || err?.message || '').toLowerCase();
+  const code = getErmisErrorCode(err);
+  const message = getErmisErrorMessage(err);
   return code === 9 || message.includes('accept invite');
 }
 
+function isNotChannelMemberError(err: any) {
+  const code = getErmisErrorCode(err);
+  const message = getErmisErrorMessage(err);
+  return code === 7 || message.includes('not a member');
+}
 function getCurrentMembership(channel: any) {
   const userId = channel?.getClient?.()?.userID;
   return channel?.state?.membership || (userId ? channel?.state?.members?.[userId] : undefined);
@@ -99,13 +113,20 @@ async function watchClassChannel(channel: any) {
   await channel.watch({ messages: { limit: 25, include_hidden_messages: true } });
 }
 
-async function acceptChannelInviteIfNeeded(channel: any) {
+async function acceptChannelInviteIfNeeded(channel: any, classroomId: string) {
   let needsAccept = false;
 
   try {
     await watchClassChannel(channel);
     needsAccept = isInactiveChannelRole(getCurrentMembership(channel)?.channel_role);
   } catch (err) {
+    if (isNotChannelMemberError(err)) {
+      await classroomAPI.ensureChatMembership(classroomId);
+      await watchClassChannel(channel);
+      markChannelMembershipAccepted(channel);
+      return;
+    }
+
     if (!isInviteRequiredError(err)) throw err;
     needsAccept = true;
   }
@@ -126,25 +147,31 @@ async function acceptChannelInviteIfNeeded(channel: any) {
       return;
     } catch (err: any) {
       lastError = err;
-      const message = String(err?.response?.data?.message || err?.message || '').toLowerCase();
+      const message = getErmisErrorMessage(err);
+
+      if (isNotChannelMemberError(err)) {
+        await classroomAPI.ensureChatMembership(classroomId);
+        await watchClassChannel(channel);
+        markChannelMembershipAccepted(channel);
+        return;
+      }
+
       if (message.includes('already') || message.includes('accepted') || message.includes('joined')) {
-        await watchClassChannel(channel).catch(() => undefined);
+        await watchClassChannel(channel);
         markChannelMembershipAccepted(channel);
         return;
       }
     }
   }
 
-  markChannelMembershipAccepted(channel);
-  if (lastError) console.warn('Class channel invite accepted locally after API fallback:', lastError);
+  throw lastError;
 }
-
 // Custom ActiveChannelSetter that resolves our custom logic
-function ActiveChannelSetter({ channelId, channelType }: { channelId: string, channelType: string }) {
+function ActiveChannelSetter({ classroomId, channelId, channelType }: { classroomId: string, channelId: string, channelType: string }) {
   const { client, setActiveChannel } = useChatClient();
 
   useEffect(() => {
-    if (!client || !channelId || !channelType) return;
+    if (!client || !classroomId || !channelId || !channelType) return;
     
     let actualType = channelType;
     let actualId = channelId;
@@ -157,16 +184,16 @@ function ActiveChannelSetter({ channelId, channelType }: { channelId: string, ch
     }
 
     const channel = client.channel(actualType, actualId);
-    acceptChannelInviteIfNeeded(channel)
-      .catch((err) => console.error('Auto accept class channel invite error:', err))
-      .finally(() => {
+    acceptChannelInviteIfNeeded(channel, classroomId)
+      .then(() => {
         if (!cancelled) setActiveChannel?.(channel);
-      });
+      })
+      .catch((err) => console.error('Auto accept class channel invite error:', err));
     
     return () => {
       cancelled = true;
     };
-  }, [client, channelId, channelType, setActiveChannel]);
+  }, [classroomId, client, channelId, channelType, setActiveChannel]);
 
   return null;
 }
@@ -778,7 +805,7 @@ export default function ClassChat({ classroomId, ermisChannelId, ermisChannelTyp
         outgoingCallAudioPath="/call_outgoing.mp3"
       >
         <ClassChatUserHydrator users={knownClassUsers} />
-        <ActiveChannelSetter channelId={ermisChannelId} channelType={ermisChannelType || 'messaging'} />
+        <ActiveChannelSetter classroomId={classroomId} channelId={ermisChannelId} channelType={ermisChannelType || 'messaging'} />
         <RaiseHand
           classroomId={classroomId}
           isTeacher={isTeacher}

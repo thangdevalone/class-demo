@@ -110,6 +110,42 @@ router.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
   }
 });
 
+// POST /api/classrooms/:id/ensure-chat-membership — make current user a real Ermis channel member
+router.post('/:id/ensure-chat-membership', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const classroom = await Classroom.findById(req.params.id);
+    if (!classroom) {
+      res.status(404).json({ error: 'Classroom not found' });
+      return;
+    }
+
+    const user = req.user!;
+    const isTeacher = classroom.teacher.toString() === user._id.toString();
+    const isStudent = classroom.students.some((s) => s.toString() === user._id.toString());
+    const isAdmin = user.role === 'admin';
+
+    if (!isAdmin && !isTeacher && !isStudent) {
+      res.status(403).json({ error: 'You are not in this classroom' });
+      return;
+    }
+
+    if (!classroom.ermisChannelId) {
+      res.status(400).json({ error: 'Classroom chat channel is not configured' });
+      return;
+    }
+
+    if (!user.ermisUserId) {
+      res.status(400).json({ error: 'Current user does not have an Ermis user id' });
+      return;
+    }
+
+    await ermisChatService.addMembersToClass(classroom.ermisChannelId, [user.ermisUserId]);
+    res.json({ message: 'Chat membership ensured' });
+  } catch (error) {
+    console.error('Ensure chat membership error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 // POST /api/classrooms — create classroom (admin only)
 router.post(
   '/',

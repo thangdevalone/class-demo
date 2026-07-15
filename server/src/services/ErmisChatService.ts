@@ -90,13 +90,21 @@ export class ErmisChatService {
       const [channelType, ...channelIdParts] = classroomId.split(':');
       const actualChannelId = channelIdParts.join(':');
       const channel = client.channel(channelType, actualChannelId);
-      await channel.watch(); // Required to mutate channel
+      await channel.watch().catch((error: any) => {
+        const code = error?.response?.data?.ermis_code || error?.ermis_code;
+        if (code !== 7) throw error;
+      });
       await channel.addMembers(memberErmisIds);
       
       console.log(`[ErmisChatService] Members added successfully`);
 
     } catch (error: any) {
-      console.error('[ErmisChatService] Failed to add members:', error.message);
+      const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
+      if (message.includes('already') || message.includes('member already')) {
+        console.log('[ErmisChatService] Members already present, skipping');
+        return;
+      }
+      console.error('[ErmisChatService] Failed to add members:', error?.response?.data || error.message);
       throw error;
     }
   }
