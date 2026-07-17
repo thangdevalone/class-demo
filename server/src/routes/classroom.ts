@@ -91,9 +91,41 @@ router.get('/browse', async (req: AuthRequest, res: Response): Promise<void> => 
 });
 
 // GET /api/classrooms/:id — get classroom detail
+// Auto-registers students who access via direct link
 router.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const classroom = await Classroom.findById(req.params.id)
+    let classroom = await Classroom.findById(req.params.id);
+
+    if (!classroom) {
+      res.status(404).json({ error: 'Classroom not found' });
+      return;
+    }
+
+    // Auto-register student if they access via direct link and aren't registered yet
+    const user = req.user;
+    if (user && user.role === 'student') {
+      const alreadyRegistered = classroom.students.some(
+        (s) => s.toString() === user._id.toString(),
+      );
+      if (!alreadyRegistered) {
+        console.log(`[Classroom] Auto-registering student ${user.username} (${user._id}) into classroom ${classroom.name}`);
+        classroom.students.push(user._id);
+        await classroom.save();
+
+        // Also add to Ermis chat channel
+        if (classroom.ermisChannelId && user.ermisUserId) {
+          try {
+            await ermisChatService.addMembersToClass(classroom.ermisChannelId, [user.ermisUserId]);
+            console.log(`[Classroom] Auto-added student ${user.username} to Ermis channel ${classroom.ermisChannelId}`);
+          } catch (chatError) {
+            console.error('[Classroom] Failed to auto-add student to Ermis channel:', chatError);
+          }
+        }
+      }
+    }
+
+    // Re-populate after potential modification
+    classroom = await Classroom.findById(req.params.id)
       .populate('teacher', 'displayName username avatar role ermisUserId')
       .populate('students', 'displayName username avatar role ermisUserId')
       .populate('raiseHandQueue.student', 'displayName username avatar ermisUserId');
