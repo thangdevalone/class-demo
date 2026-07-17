@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 
 export interface ICamera {
+  cameraId: string;
   name: string;
   url: string;
   description?: string;
@@ -23,16 +24,18 @@ export interface IClassroom extends Document {
   ermisChannelType: string;
   raiseHandQueue: IRaiseHand[];
   isActive: boolean;
-  startTime: Date;
-  endTime: Date;
+  mediaRoomId: string;
+  mediaRoomName: string;
+  classStatus: 'idle' | 'live' | 'ended';
   createdAt: Date;
   updatedAt: Date;
 }
 
 const cameraSchema = new Schema<ICamera>(
   {
+    cameraId: { type: String, required: true },
     name: { type: String, required: true },
-    url: { type: String, required: true },
+    url: { type: String, default: '' },
     description: { type: String, default: '' },
   },
   { _id: false },
@@ -94,13 +97,18 @@ const classroomSchema = new Schema<IClassroom>(
       type: Boolean,
       default: true,
     },
-    startTime: {
-      type: Date,
-      required: true,
+    mediaRoomId: {
+      type: String,
+      default: '',
     },
-    endTime: {
-      type: Date,
-      required: true,
+    mediaRoomName: {
+      type: String,
+      default: '',
+    },
+    classStatus: {
+      type: String,
+      enum: ['idle', 'live', 'ended'],
+      default: 'idle',
     },
   },
   {

@@ -1,15 +1,15 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import express from 'express';
 import cors from 'cors';
+import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import connectDB from './config/db';
+import { User } from './models/User';
 import authRoutes from './routes/auth';
 import classroomRoutes from './routes/classroom';
-import { User } from './models/User';
-import { Classroom } from './models/Classroom';
+import { setIO } from './socket';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -21,6 +21,9 @@ const io = new Server(server, {
     credentials: true,
   }
 });
+
+// Register IO instance for use in routes
+setIO(io);
 
 io.on('connection', (socket) => {
   console.log('Socket connected:', socket.id);
@@ -59,7 +62,7 @@ app.use(cors({
   origin: true,
   credentials: true,
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // Routes
 app.use('/api/auth', authRoutes);

@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { BookOpen, Calendar, Clock, Users, Video, Search, GraduationCap, LogOut, ArrowRight, XCircle, CheckCircle } from 'lucide-react';
+import { BookOpen, Users, Video, Search, GraduationCap, LogOut, ArrowRight, XCircle, CheckCircle, Radio } from 'lucide-react';
 
 type ClassroomItem = any; // simplified type
 
@@ -20,8 +20,7 @@ export default function PublicPage() {
   const [myClassrooms, setMyClassrooms] = useState<ClassroomItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  
-  const now = new Date();
+
   const isTeacher = user?.role === 'teacher';
   const isStudent = user?.role === 'student';
 
@@ -73,45 +72,32 @@ export default function PublicPage() {
     } catch (err: any) { alert(err.response?.data?.error || 'Hủy đăng ký thất bại'); }
   };
 
-  const canEnter = (c: ClassroomItem) => {
-    const start = new Date(c.startTime);
-    const end = new Date(c.endTime);
-    const earlyEntry = new Date(start.getTime() - 15 * 60 * 1000); // 15 min before
-    return now >= earlyEntry && now <= end;
-  };
-
-  const getTimeStatus = (c: ClassroomItem) => {
-    const start = new Date(c.startTime);
-    const end = new Date(c.endTime);
-    const earlyEntry = new Date(start.getTime() - 15 * 60 * 1000);
-
-    if (now > end) return { label: 'Đã kết thúc', color: 'text-slate-500' };
-    if (now >= start) return { label: 'Đang diễn ra', color: 'text-emerald-600' };
-    if (now >= earlyEntry) return { label: 'Sắp bắt đầu', color: 'text-amber-600' };
-
-    const diff = earlyEntry.getTime() - now.getTime();
-    const mins = Math.ceil(diff / 60000);
-    if (mins < 60) return { label: `Mở sau ${mins} phút`, color: 'text-slate-500' };
-    const hours = Math.floor(mins / 60);
-    return { label: `Mở sau ${hours}h${mins % 60}p`, color: 'text-slate-500' };
-  };
-
-  const formatTime = (isoString: string) => {
-    if (!isoString) return '';
-    const d = new Date(isoString);
-    return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ' + d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+  const getClassStatus = (c: ClassroomItem) => {
+    const status = c.classStatus || 'idle';
+    switch (status) {
+      case 'live':
+        return { label: 'Đang diễn ra', color: 'text-emerald-600', dotColor: 'bg-emerald-500', animate: true };
+      case 'ended':
+        return { label: 'Đã kết thúc', color: 'text-slate-500', dotColor: 'bg-slate-400', animate: false };
+      case 'idle':
+      default:
+        return { label: 'Chưa mở', color: 'text-amber-600', dotColor: 'bg-amber-400', animate: false };
+    }
   };
 
   const ClassroomCard = ({ c, showEnter = true, showRegister = false }: { c: any; showEnter?: boolean; showRegister?: boolean }) => {
-    const timeStatus = getTimeStatus(c);
-    const canGo = canEnter(c);
+    const classStatus = getClassStatus(c);
     return (
       <Card className="flex flex-col hover:shadow-md transition-shadow">
         <CardHeader>
           <div className="flex items-start justify-between">
             <CardTitle className="text-base">{c.name}</CardTitle>
-            <Badge variant={c.isActive ? 'default' : 'secondary'} className="text-[10px] font-normal">
-              {c.isActive ? 'Đang diễn ra' : 'Sắp diễn ra'}
+            <Badge
+              variant={c.classStatus === 'live' ? 'default' : 'secondary'}
+              className={`text-[10px] font-normal gap-1 ${c.classStatus === 'live' ? 'bg-emerald-600' : ''}`}
+            >
+              {c.classStatus === 'live' && <Radio className="h-2.5 w-2.5" />}
+              {classStatus.label}
             </Badge>
           </div>
           <CardDescription className="line-clamp-2 mt-1">{c.description || 'Không có mô tả'}</CardDescription>
@@ -121,16 +107,13 @@ export default function PublicPage() {
             <BookOpen className="h-4 w-4" />
             <span className="font-medium text-foreground">{c.teacher?.displayName || '—'}</span>
           </div>
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Calendar className="h-4 w-4" />
-            <span>{formatTime(c.startTime)} — {formatTime(c.endTime)}</span>
-          </div>
           <div className="flex items-center gap-5 text-muted-foreground pt-1">
             <div className="flex items-center gap-1.5"><Users className="h-4 w-4" /> {c.students?.length ?? c.studentCount ?? 0} học sinh</div>
             <div className="flex items-center gap-1.5"><Video className="h-4 w-4" /> {c.cameras?.length ?? c.cameraCount ?? 0} cam</div>
           </div>
-          <div className={`flex items-center gap-1.5 text-xs font-medium pt-2 ${timeStatus.color}`}>
-            <Clock className="h-3 w-3" /> {timeStatus.label}
+          <div className={`flex items-center gap-1.5 text-xs font-medium pt-2 ${classStatus.color}`}>
+            <span className={`h-2 w-2 rounded-full ${classStatus.dotColor} ${classStatus.animate ? 'animate-pulse' : ''}`}></span>
+            {classStatus.label}
           </div>
         </CardContent>
         <CardFooter>
@@ -140,22 +123,18 @@ export default function PublicPage() {
             </Button>
           )}
           {isAuthenticated && showEnter && (
-            <Button className="w-full" disabled={!canGo && isStudent} onClick={() => navigate(`/classroom/${c._id}`)}>
-              {canGo || isTeacher ? (
-                <><ArrowRight className="mr-2 h-4 w-4" /> Vào lớp</>
-              ) : (
-                'Chưa đến giờ'
-              )}
+            <Button className="w-full" onClick={() => navigate(`/classroom/${c._id}`)}>
+              <ArrowRight className="h-4 w-4" /> Vào lớp
             </Button>
           )}
           {isAuthenticated && showRegister && (
             c.isRegistered ? (
               <Button variant="outline" className="w-full text-destructive hover:text-destructive" onClick={() => handleUnregister(c._id)}>
-                <XCircle className="mr-2 h-4 w-4" /> Hủy đăng ký
+                <XCircle className="h-4 w-4" /> Hủy đăng ký
               </Button>
             ) : (
               <Button className="w-full" onClick={() => handleRegister(c._id)}>
-                <CheckCircle className="mr-2 h-4 w-4" /> Đăng ký tham gia
+                <CheckCircle className="h-4 w-4" /> Đăng ký tham gia
               </Button>
             )
           )}

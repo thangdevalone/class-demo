@@ -190,9 +190,28 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
       dmChannelCid,
     });
   }, [acceptDirectInviteIfNeeded, classroomId]);
+  // Stable refs for callbacks used in socket
+  const callbacksRef = useRef({
+    fetchHands,
+    emitStudentReadyForCall,
+    startTeacherCallWhenReady,
+    resetCall,
+    user
+  });
+
+  useEffect(() => {
+    callbacksRef.current = {
+      fetchHands,
+      emitStudentReadyForCall,
+      startTeacherCallWhenReady,
+      resetCall,
+      user
+    };
+  }, [fetchHands, emitStudentReadyForCall, startTeacherCallWhenReady, resetCall, user]);
+
   // Connect to socket for real-time updates
   useEffect(() => {
-    fetchHands();
+    callbacksRef.current.fetchHands();
     
     // Connect to server socket
     const socketUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -204,14 +223,15 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
     });
 
     socket.on('hand_raised', () => {
-      if (isTeacher) fetchHands();
+      if (isTeacher) callbacksRef.current.fetchHands();
     });
 
     socket.on('hand_cancelled', () => {
-      if (isTeacher) fetchHands();
+      if (isTeacher) callbacksRef.current.fetchHands();
     });
 
     socket.on('hand_accepted', (data: any) => {
+      const { fetchHands, emitStudentReadyForCall, user } = callbacksRef.current;
       if (isTeacher) fetchHands();
       if (!isTeacher && (user?.ermisUserId === data.studentErmisId || user?.username === data.studentErmisId)) {
         setMyHand(prev => prev ? { ...prev, status: 'accepted', dmChannelCid: data.dmChannelCid || prev.dmChannelCid } : null);
@@ -226,6 +246,7 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
 
     socket.on('student_ready_for_call', (data: any) => {
       if (!isTeacher) return;
+      const { startTeacherCallWhenReady } = callbacksRef.current;
       const pending = pendingTeacherCallRef.current;
       if (!pending) return;
       if (pending.studentErmisId !== data.studentErmisId || pending.dmChannelCid !== data.dmChannelCid) return;
@@ -237,6 +258,7 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
       });
     });
     socket.on('hand_completed', (data: any) => {
+      const { resetCall, fetchHands, user } = callbacksRef.current;
       resetCall?.();
       activeCallRef.current = null;
       pendingTeacherCallRef.current = null;
@@ -256,7 +278,7 @@ export default function RaiseHand({ classroomId, isTeacher, teacher, onPendingCo
     return () => {
       socket.disconnect();
     };
-  }, [classroomId, emitStudentReadyForCall, fetchHands, isTeacher, resetCall, startTeacherCallWhenReady, user?.ermisUserId, user?.username]);
+  }, [classroomId, isTeacher]);
 
   // Student: Raise hand
   const handleRaiseHand = async () => {

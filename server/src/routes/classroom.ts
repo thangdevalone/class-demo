@@ -2,27 +2,73 @@ import { Router, Request, Response } from 'express';
 import { Classroom } from '../models/Classroom';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { ermisChatService } from '../services/ErmisChatService';
+import { WhiteboardData } from '../models/WhiteboardData';
+import { getIO } from '../socket';
 
 const router = Router();
+
+const MEDIA_SERVER_URL = 'https://classroom-mediaserver.ermis.network';
+
+// ==================== MEDIA SERVER PROXY ====================
+
+// GET /api/classrooms/media/rooms — list media server rooms
+router.get('/media/rooms', authenticate, authorize('admin', 'teacher'), async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const url = `${MEDIA_SERVER_URL}/rooms`;
+    console.log(`[Media Proxy] Fetching rooms from: ${url}`);
+    const response = await fetch(url);
+    console.log(`[Media Proxy] Response status: ${response.status}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Media Proxy] Error response body:`, errorText);
+      res.status(response.status).json({ error: 'Failed to fetch rooms from media server' });
+      return;
+    }
+    const rooms = await response.json();
+    console.log(`[Media Proxy] Fetched ${Array.isArray(rooms) ? rooms.length : 'N/A'} rooms`);
+    res.json({ rooms });
+  } catch (error: any) {
+    console.error('[Media Proxy] Fetch media rooms error:', error.message || error);
+    res.status(500).json({ error: 'Failed to connect to media server' });
+  }
+});
+
+// GET /api/classrooms/media/rooms/:roomId/cameras — list cameras in a room
+router.get('/media/rooms/:roomId/cameras', authenticate, authorize('admin', 'teacher'), async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const response = await fetch(`${MEDIA_SERVER_URL}/rooms/${req.params.roomId}/cameras`);
+    if (!response.ok) {
+      res.status(response.status).json({ error: 'Failed to fetch cameras from media server' });
+      return;
+    }
+    const cameras = await response.json();
+    res.json({ cameras });
+  } catch (error) {
+    console.error('Fetch media cameras error:', error);
+    res.status(500).json({ error: 'Failed to connect to media server' });
+  }
+});
+
+// ==================== PUBLIC ROUTES ====================
 
 // GET /api/classrooms/public/browse — public browse for unauthenticated users
 router.get('/public/browse', async (req: Request, res: Response): Promise<void> => {
   try {
     const classrooms = await Classroom.find({ isActive: true })
       .populate('teacher', 'displayName username avatar role')
-      .select('name description teacher startTime endTime students cameras isActive')
-      .sort({ startTime: 1 });
+      .select('name description teacher students cameras isActive classStatus mediaRoomId mediaRoomName')
+      .sort({ createdAt: -1 });
 
     const result = classrooms.map((c) => ({
       _id: c._id,
       name: c.name,
       description: c.description,
       teacher: c.teacher,
-      startTime: c.startTime,
-      endTime: c.endTime,
       studentCount: c.students.length,
       cameraCount: c.cameras.length,
       isActive: c.isActive,
+      classStatus: c.classStatus,
+      mediaRoomName: c.mediaRoomName,
       isRegistered: false,
     }));
 
@@ -52,7 +98,7 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     const classrooms = await Classroom.find(query)
       .populate('teacher', 'displayName username avatar role')
       .populate('students', 'displayName username avatar role')
-      .sort({ startTime: 1 });
+      .sort({ createdAt: -1 });
 
     res.json({ classrooms });
   } catch (error) {
@@ -66,8 +112,8 @@ router.get('/browse', async (req: AuthRequest, res: Response): Promise<void> => 
   try {
     const classrooms = await Classroom.find({ isActive: true })
       .populate('teacher', 'displayName username avatar role')
-      .select('name description teacher startTime endTime students cameras isActive')
-      .sort({ startTime: 1 });
+      .select('name description teacher students cameras isActive classStatus mediaRoomId mediaRoomName')
+      .sort({ createdAt: -1 });
 
     // Return with studentCount instead of full student list for privacy
     const result = classrooms.map((c) => ({
@@ -75,11 +121,11 @@ router.get('/browse', async (req: AuthRequest, res: Response): Promise<void> => 
       name: c.name,
       description: c.description,
       teacher: c.teacher,
-      startTime: c.startTime,
-      endTime: c.endTime,
       studentCount: c.students.length,
       cameraCount: c.cameras.length,
       isActive: c.isActive,
+      classStatus: c.classStatus,
+      mediaRoomName: c.mediaRoomName,
       isRegistered: c.students.some((s) => s.toString() === req.user!._id.toString()),
     }));
 
@@ -178,13 +224,157 @@ router.post('/:id/ensure-chat-membership', async (req: AuthRequest, res: Respons
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+// ==================== CLASS CONTROL (TEACHER) ====================
+
+// POST /api/classrooms/:id/start-class — teacher starts the class
+router.post(
+  '/:id/start-class',
+  authorize('teacher', 'admin'),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const classroom = await Classroom.findById(req.params.id);
+      if (!classroom) {
+        res.status(404).json({ error: 'Classroom not found' });
+        return;
+      }
+
+      // Only the assigned teacher or admin can start
+      const user = req.user!;
+      const isTeacher = classroom.teacher.toString() === user._id.toString();
+      const isAdmin = user.role === 'admin';
+      if (!isTeacher && !isAdmin) {
+        res.status(403).json({ error: 'Only the assigned teacher can start this class' });
+        return;
+      }
+
+      if (!classroom.mediaRoomId) {
+        res.status(400).json({ error: 'No media room assigned to this classroom' });
+        return;
+      }
+
+      // Call media server to start the room
+      console.log(`[Classroom] Starting media room: ${classroom.mediaRoomId}`);
+      const startResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      if (!startResponse.ok) {
+        const errorText = await startResponse.text();
+        console.error(`[Classroom] Media server start failed:`, errorText);
+        res.status(500).json({ error: 'Failed to start media room' });
+        return;
+      }
+
+      const startData: any = await startResponse.json();
+      console.log(`[Classroom] Media room started, streams:`, JSON.stringify(startData.streams?.length || 0));
+
+      // Update cameras with master_url from response
+      if (startData.streams && Array.isArray(startData.streams)) {
+        classroom.cameras = startData.streams.map((stream: any) => ({
+          cameraId: stream.camera_id,
+          name: stream.camera_id,
+          url: stream.master_url,
+          description: '',
+        }));
+      }
+
+      classroom.classStatus = 'live';
+      await classroom.save();
+
+      // Emit socket event to notify students
+      getIO().to(`classroom_${classroom._id}`).emit('class_started', {
+        classroomId: classroom._id,
+        cameras: classroom.cameras,
+      });
+
+      await classroom.populate('teacher', 'displayName username avatar role ermisUserId');
+      await classroom.populate('students', 'displayName username avatar role ermisUserId');
+
+      res.json({ classroom, message: 'Class started successfully' });
+    } catch (error) {
+      console.error('Start class error:', error);
+      res.status(500).json({ error: 'Server error' });
+    }
+  },
+);
+
+// POST /api/classrooms/:id/end-class — teacher ends the class
+router.post(
+  '/:id/end-class',
+  authorize('teacher', 'admin'),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const classroom = await Classroom.findById(req.params.id);
+      if (!classroom) {
+        res.status(404).json({ error: 'Classroom not found' });
+        return;
+      }
+
+      // Only the assigned teacher or admin can end
+      const user = req.user!;
+      const isTeacher = classroom.teacher.toString() === user._id.toString();
+      const isAdmin = user.role === 'admin';
+      if (!isTeacher && !isAdmin) {
+        res.status(403).json({ error: 'Only the assigned teacher can end this class' });
+        return;
+      }
+
+      // Call media server to stop the room
+      if (classroom.mediaRoomId) {
+        console.log(`[Classroom] Stopping media room: ${classroom.mediaRoomId}`);
+        try {
+          const stopResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          if (!stopResponse.ok) {
+            console.error(`[Classroom] Media server stop failed:`, await stopResponse.text());
+          }
+        } catch (stopError) {
+          console.error('[Classroom] Error stopping media room:', stopError);
+        }
+      }
+
+      classroom.classStatus = 'ended';
+      // Clear camera URLs since streams are stopped
+      classroom.cameras = classroom.cameras.map((cam: any) => ({
+        cameraId: cam.cameraId,
+        name: cam.name,
+        url: '',
+        description: cam.description || '',
+      })) as any;
+      await classroom.save();
+
+      // Emit socket event to notify students
+      getIO().to(`classroom_${classroom._id}`).emit('class_ended', {
+        classroomId: classroom._id,
+      });
+
+      // Also clear raise hand queue
+      classroom.raiseHandQueue = [] as any;
+      await classroom.save();
+
+      res.json({ message: 'Class ended successfully' });
+    } catch (error) {
+      console.error('End class error:', error);
+      res.status(500).json({ error: 'Server error' });
+    }
+  },
+);
+
+// ==================== CRUD ====================
+
 // POST /api/classrooms — create classroom (admin only)
 router.post(
   '/',
   authorize('admin'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const { name, description, cameras, teacherId, studentIds, startTime, endTime } = req.body;
+      const { name, description, teacherId, studentIds, mediaRoomId, mediaRoomName } = req.body;
 
       if (!name) {
         res.status(400).json({ error: 'Classroom name is required' });
@@ -194,22 +384,38 @@ router.post(
         res.status(400).json({ error: 'Teacher is required' });
         return;
       }
-      if (!startTime || !endTime) {
-        res.status(400).json({ error: 'Start and end time are required' });
-        return;
+
+      // Fetch cameras from media server room if mediaRoomId is provided
+      let cameras: any[] = [];
+      if (mediaRoomId) {
+        try {
+          const camResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${mediaRoomId}/cameras`);
+          if (camResponse.ok) {
+            const camData = await camResponse.json();
+            if (Array.isArray(camData)) {
+              cameras = camData.map((cam: any) => ({
+                cameraId: cam.camera_id || cam.id,
+                name: cam.name || cam.camera_id || cam.id,
+                url: '', // URL will be filled when teacher starts the class
+                description: cam.description || '',
+              }));
+            }
+          }
+        } catch (camError) {
+          console.error('Failed to fetch cameras from media server:', camError);
+        }
       }
 
       const classroom = new Classroom({
         name,
         description: description || '',
-        cameras: cameras || [],
+        cameras,
         teacher: teacherId,
         students: studentIds || [],
-        startTime: new Date(startTime),
-        endTime: new Date(endTime),
+        mediaRoomId: mediaRoomId || '',
+        mediaRoomName: mediaRoomName || '',
+        classStatus: 'idle',
       });
-      
-      // Channel ID will be set after creation
 
       await classroom.save();
       await classroom.populate('teacher', 'displayName username avatar role ermisUserId');
@@ -236,7 +442,6 @@ router.post(
         await classroom.save();
       } catch (chatError) {
         console.error('Failed to create Ermis chat channel:', chatError);
-        // Do we fail classroom creation? Usually yes or log and proceed. We'll proceed for robustness.
       }
 
       res.status(201).json({ classroom });
@@ -253,17 +458,36 @@ router.put(
   authorize('admin'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const { name, description, cameras, teacherId, studentIds, startTime, endTime, isActive } = req.body;
+      const { name, description, teacherId, studentIds, mediaRoomId, mediaRoomName, isActive } = req.body;
       const update: any = {};
 
       if (name) update.name = name;
       if (description !== undefined) update.description = description;
-      if (cameras) update.cameras = cameras;
       if (teacherId) update.teacher = teacherId;
       if (studentIds) update.students = studentIds;
-      if (startTime) update.startTime = new Date(startTime);
-      if (endTime) update.endTime = new Date(endTime);
+      if (mediaRoomId !== undefined) update.mediaRoomId = mediaRoomId;
+      if (mediaRoomName !== undefined) update.mediaRoomName = mediaRoomName;
       if (isActive !== undefined) update.isActive = isActive;
+
+      // If mediaRoomId changed, re-fetch cameras
+      if (mediaRoomId) {
+        try {
+          const camResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${mediaRoomId}/cameras`);
+          if (camResponse.ok) {
+            const camData = await camResponse.json();
+            if (Array.isArray(camData)) {
+              update.cameras = camData.map((cam: any) => ({
+                cameraId: cam.camera_id || cam.id,
+                name: cam.name || cam.camera_id || cam.id,
+                url: '',
+                description: cam.description || '',
+              }));
+            }
+          }
+        } catch (camError) {
+          console.error('Failed to fetch cameras from media server:', camError);
+        }
+      }
 
       const classroom = await Classroom.findByIdAndUpdate(
         req.params.id,
@@ -292,11 +516,42 @@ router.delete(
   authorize('admin'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const classroom = await Classroom.findByIdAndDelete(req.params.id);
+      const classroom = await Classroom.findById(req.params.id);
       if (!classroom) {
         res.status(404).json({ error: 'Classroom not found' });
         return;
       }
+
+      // Stop media room if class is live
+      if (classroom.classStatus === 'live' && classroom.mediaRoomId) {
+        try {
+          await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          console.log(`[Classroom] Stopped media room ${classroom.mediaRoomId} before delete`);
+        } catch (stopErr) {
+          console.error('[Classroom] Failed to stop media room on delete:', stopErr);
+        }
+      }
+
+      // Delete Ermis chat channel
+      if (classroom.ermisChannelId) {
+        try {
+          await ermisChatService.deleteClassChannel(classroom.ermisChannelId);
+          console.log(`[Classroom] Deleted Ermis channel ${classroom.ermisChannelId}`);
+        } catch (chatErr) {
+          console.error('[Classroom] Failed to delete Ermis channel:', chatErr);
+        }
+      }
+
+      // Delete whiteboard data
+      await WhiteboardData.deleteMany({ classroom: classroom._id });
+
+      // Delete classroom
+      await Classroom.findByIdAndDelete(req.params.id);
+
       res.json({ message: 'Classroom deleted' });
     } catch (error) {
       console.error('Delete classroom error:', error);
@@ -479,6 +734,65 @@ router.get('/:id/my-hand', authorize('student'), async (req: AuthRequest, res: R
     );
     res.json({ hand: myHand || null });
   } catch (error) { res.status(500).json({ error: 'Server error' }); }
+});
+
+
+// ==================== WHITEBOARD ====================
+
+// GET /api/classrooms/:id/whiteboard — get whiteboard data for current user
+router.get('/:id/whiteboard', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const data = await WhiteboardData.findOne({
+      user: user._id,
+      classroom: req.params.id,
+    });
+
+    if (!data) {
+      res.json({ whiteboard: null });
+      return;
+    }
+
+    res.json({
+      whiteboard: {
+        elements: data.elements,
+        appState: data.appState,
+        files: data.files,
+        updatedAt: data.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Get whiteboard error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/classrooms/:id/whiteboard — save whiteboard data for current user
+router.put('/:id/whiteboard', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const { elements, appState, files } = req.body;
+
+    const data = await WhiteboardData.findOneAndUpdate(
+      { user: user._id, classroom: req.params.id },
+      {
+        user: user._id,
+        classroom: req.params.id,
+        elements: elements || [],
+        appState: appState || {},
+        files: files || {},
+      },
+      { upsert: true, new: true },
+    );
+
+    res.json({
+      message: 'Whiteboard saved',
+      updatedAt: data.updatedAt,
+    });
+  } catch (error) {
+    console.error('Save whiteboard error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 export default router;

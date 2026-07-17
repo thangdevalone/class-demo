@@ -45,14 +45,14 @@ export const classroomAPI = {
 
   ensureChatMembership: (classroomId: string) =>
     api.post(`/classrooms/${classroomId}/ensure-chat-membership`),
+
   create: (data: {
     name: string;
     description?: string;
-    cameras?: { name: string; url: string; description?: string }[];
     teacherId?: string;
     studentIds?: string[];
-    startTime: string;
-    endTime: string;
+    mediaRoomId?: string;
+    mediaRoomName?: string;
   }) => api.post('/classrooms', data),
 
   update: (id: string, data: any) => api.put(`/classrooms/${id}`, data),
@@ -65,6 +65,20 @@ export const classroomAPI = {
   unregister: (classroomId: string) =>
     api.post(`/classrooms/${classroomId}/unregister`),
 
+  // Class control
+  startClass: (classroomId: string) =>
+    api.post(`/classrooms/${classroomId}/start-class`),
+
+  endClass: (classroomId: string) =>
+    api.post(`/classrooms/${classroomId}/end-class`),
+
+  // Media server proxy
+  getMediaRooms: () => api.get('/classrooms/media/rooms'),
+
+  getMediaRoomCameras: (roomId: string) =>
+    api.get(`/classrooms/media/rooms/${roomId}/cameras`),
+
+  // Raise hand
   raiseHand: (classroomId: string) =>
     api.post(`/classrooms/${classroomId}/raise-hand`),
 
@@ -85,6 +99,12 @@ export const classroomAPI = {
 
   getMyHand: (classroomId: string) =>
     api.get(`/classrooms/${classroomId}/my-hand`),
+
+  getWhiteboard: (classroomId: string) =>
+    api.get(`/classrooms/${classroomId}/whiteboard`),
+
+  saveWhiteboard: (classroomId: string, data: { elements: any[]; appState: any; files?: any }) =>
+    api.put(`/classrooms/${classroomId}/whiteboard`, data),
 };
 
 export default api;

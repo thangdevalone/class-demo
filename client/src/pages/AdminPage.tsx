@@ -8,9 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
-  Calendar,
   ChevronRight,
-  Clock,
   LayoutGrid,
   LogOut,
   Pencil,
@@ -18,13 +16,30 @@ import {
   School,
   Trash2,
   Users,
-  Video, X, BookOpen, GraduationCap, Eye, EyeOff, Loader2
+  Video, BookOpen, GraduationCap, Eye, EyeOff, Loader2, Radio, Camera
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { authAPI, classroomAPI } from '../services/api';
 
 type Section = 'users' | 'classrooms';
+
+console.log('[AdminPage] Loaded at:', new Date().toISOString(), 'Has getMediaRooms:', !!classroomAPI.getMediaRooms);
+
+interface MediaRoom {
+  room_id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MediaCamera {
+  camera_id: string;
+  name: string;
+  description?: string;
+}
 
 export default function AdminPage() {
   const { user, logout } = useAuth();
@@ -50,17 +65,17 @@ export default function AdminPage() {
   const [className, setClassName] = useState('');
   const [classDesc, setClassDesc] = useState('');
   const [selectedTeacher, setSelectedTeacher] = useState('');
-  const [selectedStudents, setSelectedStudents] = useState<string[]>([]);
-  const [startTime, setStartTime] = useState('');
-  const [endTime, setEndTime] = useState('');
+
   const [classFormError, setClassFormError] = useState('');
   const [classFormLoading, setClassFormLoading] = useState(false);
-  const [cameras, setCameras] = useState([
-    { name: 'Camera 1', url: 'https://classroom-mediaserver.ermis.network/live/camera-01/master.m3u8', description: '' },
-    { name: 'Camera 2', url: 'https://classroom-mediaserver.ermis.network/live/camera-02/master.m3u8', description: '' },
-    { name: 'Camera 3', url: 'https://classroom-mediaserver.ermis.network/live/camera-03/master.m3u8', description: '' },
-  ]);
-  const [detailClassroom, setDetailClassroom] = useState<any>(null);
+
+  // Media rooms
+  const [mediaRooms, setMediaRooms] = useState<MediaRoom[]>([]);
+  const [selectedMediaRoom, setSelectedMediaRoom] = useState('');
+  const [selectedMediaRoomName, setSelectedMediaRoomName] = useState('');
+  const [mediaRoomsLoading, setMediaRoomsLoading] = useState(false);
+  const [roomCameras, setRoomCameras] = useState<MediaCamera[]>([]);
+  const [camerasLoading, setCamerasLoading] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -73,16 +88,47 @@ export default function AdminPage() {
 
   useEffect(() => { fetchData(); }, []);
 
-  const resetUserForm = () => { 
-    setEditingUserId(null); 
-    setNewUsername(''); 
-    setNewPassword(''); 
-    setNewDisplayName(''); 
-    setNewRole('student'); 
-    setUserFormError(''); 
+  // Fetch media rooms when classroom dialog opens
+  const fetchMediaRooms = async () => {
+    setMediaRoomsLoading(true);
+    try {
+      console.log('[AdminPage] Fetching media rooms...');
+      const res = await classroomAPI.getMediaRooms();
+      console.log('[AdminPage] Media rooms response:', res.data);
+      setMediaRooms(res.data.rooms || []);
+    } catch (err: any) {
+      console.error('[AdminPage] Failed to fetch media rooms:', err?.response?.status, err?.response?.data, err?.message);
+      toast.error('Không thể tải danh sách phòng media');
+    } finally {
+      setMediaRoomsLoading(false);
+    }
+  };
+
+  // Fetch cameras when a room is selected
+  const fetchRoomCameras = async (roomId: string) => {
+    if (!roomId) { setRoomCameras([]); return; }
+    setCamerasLoading(true);
+    try {
+      const res = await classroomAPI.getMediaRoomCameras(roomId);
+      setRoomCameras(res.data.cameras || []);
+    } catch (err) {
+      console.error('Failed to fetch cameras:', err);
+      setRoomCameras([]);
+    } finally {
+      setCamerasLoading(false);
+    }
+  };
+
+  const resetUserForm = () => {
+    setEditingUserId(null);
+    setNewUsername('');
+    setNewPassword('');
+    setNewDisplayName('');
+    setNewRole('student');
+    setUserFormError('');
     setShowPassword(false);
   };
-  
+
   const openEditUser = (user: any) => {
     setEditingUserId(user._id);
     setNewUsername(user.username);
@@ -109,7 +155,7 @@ export default function AdminPage() {
       }
       const res = await authAPI.getUsers(); setUsers(res.data.users);
       setUserDialogOpen(false); resetUserForm();
-    } catch (err: any) { 
+    } catch (err: any) {
       setUserFormError(err.response?.data?.error || 'Lưu thất bại');
       toast.error(err.response?.data?.error || 'Lưu thất bại');
     }
@@ -123,39 +169,54 @@ export default function AdminPage() {
   };
 
   const resetClassForm = () => {
-    setClassName(''); setClassDesc(''); setSelectedTeacher(''); setSelectedStudents([]);
-    setStartTime(''); setEndTime(''); setClassFormError(''); setEditingClassroom(null);
-    setCameras([
-      { name: 'Camera 1', url: 'https://classroom-mediaserver.ermis.network/live/camera-01/master.m3u8', description: '' },
-      { name: 'Camera 2', url: 'https://classroom-mediaserver.ermis.network/live/camera-02/master.m3u8', description: '' },
-      { name: 'Camera 3', url: 'https://classroom-mediaserver.ermis.network/live/camera-03/master.m3u8', description: '' },
-    ]);
+    setClassName(''); setClassDesc(''); setSelectedTeacher('');
+    setClassFormError(''); setEditingClassroom(null);
+    setSelectedMediaRoom(''); setSelectedMediaRoomName('');
+    setRoomCameras([]);
   };
   const openEditClassroom = (c: any) => {
     setEditingClassroom(c); setClassName(c.name); setClassDesc(c.description || '');
     setSelectedTeacher(c.teacher?._id || '');
-    setSelectedStudents(c.students?.map((s: any) => s._id) || []);
-    setStartTime(c.startTime ? new Date(c.startTime).toISOString().slice(0, 16) : '');
-    setEndTime(c.endTime ? new Date(c.endTime).toISOString().slice(0, 16) : '');
-    setCameras(c.cameras || []); setClassDialogOpen(true);
+
+    setSelectedMediaRoom(c.mediaRoomId || '');
+    setSelectedMediaRoomName(c.mediaRoomName || '');
+    setClassDialogOpen(true);
+    fetchMediaRooms();
+    if (c.mediaRoomId) {
+      fetchRoomCameras(c.mediaRoomId);
+    }
   };
+
+  const handleOpenClassDialog = () => {
+    resetClassForm();
+    setClassDialogOpen(true);
+    fetchMediaRooms();
+  };
+
   const handleSaveClassroom = async () => {
-    if (!className || !selectedTeacher || !startTime || !endTime) { setClassFormError('Cần tên, GV, thời gian'); return; }
+    if (!className || !selectedTeacher) { setClassFormError('Cần tên lớp và giáo viên'); return; }
     setClassFormError('');
     setClassFormLoading(true);
     try {
-      const data = { name: className, description: classDesc, cameras, teacherId: selectedTeacher, studentIds: selectedStudents, startTime, endTime };
+      const data = {
+        name: className,
+        description: classDesc,
+        teacherId: selectedTeacher,
+
+        mediaRoomId: selectedMediaRoom,
+        mediaRoomName: selectedMediaRoomName,
+      };
       if (editingClassroom) {
         await classroomAPI.update(editingClassroom._id, data);
         toast.success('Cập nhật lớp học thành công');
       }
       else {
-        await classroomAPI.create(data as any);
+        await classroomAPI.create(data);
         toast.success('Tạo lớp học mới thành công');
       }
       const res = await classroomAPI.list(); setClassrooms(res.data.classrooms);
       setClassDialogOpen(false); resetClassForm();
-    } catch (err: any) { 
+    } catch (err: any) {
       setClassFormError(err.response?.data?.error || 'Lỗi');
       toast.error(err.response?.data?.error || 'Lưu thất bại');
     } finally {
@@ -167,14 +228,30 @@ export default function AdminPage() {
     try { await classroomAPI.delete(id); setClassrooms((p) => p.filter((c) => c._id !== id)); toast.success('Xóa thành công'); }
     catch (err: any) { toast.error(err.response?.data?.error || 'Xóa thất bại'); }
   };
-  const toggleStudent = (id: string) => setSelectedStudents((p) => p.includes(id) ? p.filter((s) => s !== id) : [...p, id]);
-  const updateCamera = (i: number, f: string, v: string) => setCameras((p) => p.map((c, idx) => idx === i ? { ...c, [f]: v } : c));
-  const addCamera = () => setCameras((p) => [...p, { name: `Camera ${p.length + 1}`, url: '', description: '' }]);
-  const removeCamera = (i: number) => setCameras((p) => p.filter((_, idx) => idx !== i));
+
+
+  const handleMediaRoomChange = (roomId: string) => {
+    setSelectedMediaRoom(roomId);
+    const room = mediaRooms.find(r => r.room_id === roomId);
+    setSelectedMediaRoomName(room?.name || '');
+    fetchRoomCameras(roomId);
+  };
 
   const teachers = users.filter((u) => u.role === 'teacher');
   const students = users.filter((u) => u.role === 'student');
   const formatDT = (d: string) => d ? new Date(d).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+
+  const getStatusBadge = (classStatus: string) => {
+    switch (classStatus) {
+      case 'live':
+        return <Badge variant="default" className="font-normal gap-1.5 bg-emerald-600"><Radio className="h-3 w-3" /> Đang phát</Badge>;
+      case 'ended':
+        return <Badge variant="secondary" className="font-normal gap-1.5">Đã kết thúc</Badge>;
+      case 'idle':
+      default:
+        return <Badge variant="outline" className="font-normal gap-1.5 text-amber-600 border-amber-300">Chưa mở</Badge>;
+    }
+  };
 
   if (user?.role !== 'admin') return <div className="flex items-center justify-center h-screen text-red-500">Chỉ admin</div>;
 
@@ -190,29 +267,29 @@ export default function AdminPage() {
         </div>
 
         <div className="px-4 py-4 flex flex-col gap-1 flex-1">
-          <Button 
-            variant="default" 
+          <Button
+            variant="default"
             className="w-full justify-start shadow-sm bg-black text-white hover:bg-black/90 mb-6 rounded-lg h-10"
-            onClick={() => activeSection === 'users' ? setUserDialogOpen(true) : setClassDialogOpen(true)}
+            onClick={() => activeSection === 'users' ? setUserDialogOpen(true) : handleOpenClassDialog()}
           >
             <Plus size={16} className="mr-2" /> Quick Create
           </Button>
 
           <span className="text-xs font-semibold text-slate-500 px-2 py-2">Management</span>
-          
-          <button 
-            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${activeSection === 'users' ? 'bg-slate-100 text-slate-900 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`} 
+
+          <button
+            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${activeSection === 'users' ? 'bg-slate-100 text-slate-900 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
             onClick={() => setActiveSection('users')}
           >
-            <Users size={16} className={activeSection === 'users' ? 'text-slate-900' : 'text-slate-500'} /> 
+            <Users size={16} className={activeSection === 'users' ? 'text-slate-900' : 'text-slate-500'} />
             Người dùng
           </button>
-          
-          <button 
-            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${activeSection === 'classrooms' ? 'bg-slate-100 text-slate-900 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`} 
+
+          <button
+            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${activeSection === 'classrooms' ? 'bg-slate-100 text-slate-900 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
             onClick={() => setActiveSection('classrooms')}
           >
-            <School size={16} className={activeSection === 'classrooms' ? 'text-slate-900' : 'text-slate-500'} /> 
+            <School size={16} className={activeSection === 'classrooms' ? 'text-slate-900' : 'text-slate-500'} />
             Lớp học
           </button>
         </div>
@@ -234,12 +311,12 @@ export default function AdminPage() {
             <ChevronRight size={14} />
             <span className="font-medium text-slate-900">{activeSection === 'users' ? 'Quản lý Người dùng' : 'Quản lý Lớp học'}</span>
           </div>
-          
+
           <div className="flex items-center gap-3">
-             <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50">
-               <div className="w-5 h-5 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-700">{user?.displayName?.charAt(0)}</div>
-               <span className="text-xs font-medium">{user?.displayName}</span>
-             </div>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50">
+              <div className="w-5 h-5 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-700">{user?.displayName?.charAt(0)}</div>
+              <span className="text-xs font-medium">{user?.displayName}</span>
+            </div>
           </div>
         </header>
 
@@ -294,7 +371,7 @@ export default function AdminPage() {
                       </div>
                       <Dialog open={userDialogOpen} onOpenChange={(v) => { setUserDialogOpen(v); if (!v) resetUserForm(); }}>
                         <DialogTrigger asChild>
-                          <Button variant="outline" size="sm"><Plus className="mr-2 h-4 w-4" /> Thêm mới</Button>
+                          <Button variant="outline" size="sm"><Plus className="h-4 w-4" /> Thêm mới</Button>
                         </DialogTrigger>
                         <DialogContent className="sm:max-w-[425px]">
                           <DialogHeader>
@@ -341,48 +418,48 @@ export default function AdminPage() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                        {users.map((u) => (
-                          <TableRow key={u._id}>
-                            <TableCell className="font-medium">
-                              <div className="flex items-center gap-3">
-                                <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center text-xs font-semibold">{u.displayName?.charAt(0)}</div>
-                                <span>{u.displayName}</span>
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-muted-foreground">{u.username}</TableCell>
-                            <TableCell>
-                              <Badge variant={u.role === 'admin' ? 'destructive' : u.role === 'teacher' ? 'default' : 'secondary'} className="font-normal capitalize">
-                                {u.role}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-muted-foreground">{formatDT(u.createdAt)}</TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex items-center justify-end gap-1">
-                                {u.username !== 'admin' && (
-                                  <Button variant="ghost" size="icon" onClick={() => openEditUser(u)}>
-                                    <Pencil className="h-4 w-4 text-muted-foreground" />
-                                  </Button>
-                                )}
-                                {u.username !== 'admin' && (
-                                  <Button variant="ghost" size="icon" onClick={() => handleDeleteUser(u._id, u.username)}>
-                                    <Trash2 className="h-4 w-4 text-muted-foreground" />
-                                  </Button>
-                                )}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </CardContent>
-                </Card>
+                          {users.map((u) => (
+                            <TableRow key={u._id}>
+                              <TableCell className="font-medium">
+                                <div className="flex items-center gap-3">
+                                  <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center text-xs font-semibold">{u.displayName?.charAt(0)}</div>
+                                  <span>{u.displayName}</span>
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-muted-foreground">{u.username}</TableCell>
+                              <TableCell>
+                                <Badge variant={u.role === 'admin' ? 'destructive' : u.role === 'teacher' ? 'default' : 'secondary'} className="font-normal capitalize">
+                                  {u.role}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-muted-foreground">{formatDT(u.createdAt)}</TableCell>
+                              <TableCell className="text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  {u.username !== 'admin' && (
+                                    <Button variant="ghost" size="icon" onClick={() => openEditUser(u)}>
+                                      <Pencil className="h-4 w-4 text-muted-foreground" />
+                                    </Button>
+                                  )}
+                                  {u.username !== 'admin' && (
+                                    <Button variant="ghost" size="icon" onClick={() => handleDeleteUser(u._id, u.username)}>
+                                      <Trash2 className="h-4 w-4 text-muted-foreground" />
+                                    </Button>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  </Card>
                 </>
               )}
 
               {/* Classrooms Section */}
               {activeSection === 'classrooms' && (
                 <>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2 mb-8">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3 mb-8">
                     <Card>
                       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                         <CardTitle className="text-sm font-medium">Total Classrooms</CardTitle>
@@ -394,11 +471,20 @@ export default function AdminPage() {
                     </Card>
                     <Card>
                       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                        <CardTitle className="text-sm font-medium">Active Sessions</CardTitle>
+                        <CardTitle className="text-sm font-medium">Live Sessions</CardTitle>
                         <Video className="h-4 w-4 text-emerald-600" />
                       </CardHeader>
                       <CardContent>
-                        <div className="text-2xl font-bold text-emerald-600">{classrooms.filter(c => c.isActive).length}</div>
+                        <div className="text-2xl font-bold text-emerald-600">{classrooms.filter(c => c.classStatus === 'live').length}</div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium">Idle</CardTitle>
+                        <Radio className="h-4 w-4 text-amber-500" />
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-2xl font-bold text-amber-500">{classrooms.filter(c => c.classStatus === 'idle' || !c.classStatus).length}</div>
                       </CardContent>
                     </Card>
                   </div>
@@ -410,13 +496,11 @@ export default function AdminPage() {
                         <CardDescription>Quản lý phiên học và phòng học</CardDescription>
                       </div>
                       <Dialog open={classDialogOpen} onOpenChange={(v) => { setClassDialogOpen(v); if (!v) resetClassForm(); }}>
-                        <DialogTrigger asChild>
-                          <Button variant="outline" size="sm"><Plus className="mr-2 h-4 w-4" /> Tạo lớp học</Button>
-                        </DialogTrigger>
+                        <Button variant="outline" size="sm" onClick={handleOpenClassDialog}><Plus className="h-4 w-4" /> Tạo lớp học</Button>
                         <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
                           <DialogHeader>
                             <DialogTitle>{editingClassroom ? 'Sửa lớp học' : 'Tạo lớp học mới'}</DialogTitle>
-                            <DialogDescription>Cấu hình thông tin, lịch học và camera</DialogDescription>
+                            <DialogDescription>Cấu hình thông tin và chọn phòng media</DialogDescription>
                           </DialogHeader>
                           {classFormError && <p className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-md">{classFormError}</p>}
                           <div className="space-y-4 py-4">
@@ -429,29 +513,73 @@ export default function AdminPage() {
                                 </Select>
                               </div>
                             </div>
-                            <div className="grid grid-cols-2 gap-4">
-                              <div className="space-y-2"><Label>Bắt đầu</Label><Input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></div>
-                              <div className="space-y-2"><Label>Kết thúc</Label><Input type="datetime-local" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></div>
-                            </div>
                             <div className="space-y-2"><Label>Mô tả ngắn</Label><Input value={classDesc} onChange={(e) => setClassDesc(e.target.value)} placeholder="Mô tả" /></div>
-                            
-                            <div className="space-y-2 border-t pt-4">
-                              <Label>Camera Settings ({cameras.length})</Label>
-                              {cameras.map((cam, i) => (
-                                <div key={i} className="flex gap-2">
-                                  <Input className="w-1/3" placeholder="Tên" value={cam.name} onChange={(e) => updateCamera(i, 'name', e.target.value)} />
-                                  <Input className="flex-1" placeholder="URL HLS" value={cam.url} onChange={(e) => updateCamera(i, 'url', e.target.value)} />
-                                  <Button type="button" variant="ghost" size="icon" className="shrink-0 text-red-500" onClick={() => removeCamera(i)}><X size={14} /></Button>
+
+                            {/* Media Room Selection */}
+                            <div className="space-y-3 border-t pt-4">
+                              <Label className="flex items-center gap-2">
+                                <Camera className="h-4 w-4" />
+                                Media Room
+                              </Label>
+                              {mediaRoomsLoading ? (
+                                <div className="flex items-center gap-2 text-sm text-slate-500 py-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" /> Đang tải danh sách phòng...
                                 </div>
-                              ))}
-                              <Button type="button" variant="outline" size="sm" onClick={addCamera} className="w-full border-dashed"><Plus size={14} className="mr-1" /> Add Stream</Button>
+                              ) : (
+                                <Select value={selectedMediaRoom} onValueChange={handleMediaRoomChange}>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Chọn phòng media" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {mediaRooms.map((room) => (
+                                      <SelectItem key={room.room_id} value={room.room_id}>
+                                        <div className="flex items-center gap-2">
+                                          <span>{room.name}</span>
+                                          {room.enabled ? (
+                                            <Badge variant="outline" className="text-[9px] px-1 py-0 border-emerald-300 text-emerald-600">Active</Badge>
+                                          ) : (
+                                            <Badge variant="outline" className="text-[9px] px-1 py-0">Disabled</Badge>
+                                          )}
+                                        </div>
+                                      </SelectItem>
+                                    ))}
+                                    {mediaRooms.length === 0 && (
+                                      <div className="px-3 py-2 text-sm text-slate-500">Không tìm thấy phòng media nào</div>
+                                    )}
+                                  </SelectContent>
+                                </Select>
+                              )}
+
+                              {/* Show cameras preview */}
+                              {selectedMediaRoom && (
+                                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-xs font-semibold text-slate-600">Cameras trong phòng</span>
+                                    {camerasLoading && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
+                                  </div>
+                                  {!camerasLoading && roomCameras.length > 0 ? (
+                                    <div className="space-y-1">
+                                      {roomCameras.map((cam) => (
+                                        <div key={cam.camera_id} className="flex items-center gap-2 text-xs text-slate-600 bg-white rounded px-2 py-1.5 border border-slate-100">
+                                          <Video className="h-3 w-3 text-slate-400" />
+                                          <span className="font-medium">{cam.name || cam.camera_id}</span>
+                                          {cam.description && <span className="text-slate-400">— {cam.description}</span>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : !camerasLoading ? (
+                                    <p className="text-xs text-slate-400">Không tìm thấy camera nào</p>
+                                  ) : null}
+                                </div>
+                              )}
                             </div>
+
                           </div>
                           <DialogFooter>
                             <Button variant="outline" onClick={() => setClassDialogOpen(false)}>Hủy</Button>
                             <Button onClick={handleSaveClassroom} disabled={classFormLoading}>
                               {classFormLoading ? (
-                                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Đang lưu...</>
+                                <><Loader2 className="h-4 w-4 animate-spin" /> Đang lưu...</>
                               ) : (
                                 'Lưu thay đổi'
                               )}
@@ -466,51 +594,55 @@ export default function AdminPage() {
                           <TableRow>
                             <TableHead>Phòng học</TableHead>
                             <TableHead>Giáo viên</TableHead>
-                            <TableHead>Lịch</TableHead>
+                            <TableHead>Media Room</TableHead>
                             <TableHead>HS / Cam</TableHead>
-                            <TableHead>Status</TableHead>
+                            <TableHead>Trạng thái</TableHead>
                             <TableHead className="w-[100px] text-right"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                        {classrooms.map((c) => (
-                          <TableRow key={c._id}>
-                            <TableCell>
-                              <div className="font-medium text-slate-900">{c.name}</div>
-                              {c.description && <div className="text-xs text-muted-foreground mt-0.5">{c.description}</div>}
-                            </TableCell>
-                            <TableCell className="text-muted-foreground">{c.teacher?.displayName || '—'}</TableCell>
-                            <TableCell className="text-xs text-muted-foreground space-y-0.5">
-                              <div className="flex items-center gap-1.5"><Calendar className="h-3 w-3" /> {formatDT(c.startTime)}</div>
-                              <div className="flex items-center gap-1.5"><Clock className="h-3 w-3" /> {formatDT(c.endTime)}</div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="text-xs text-muted-foreground flex gap-3">
-                                <span className="flex items-center gap-1"><Users className="h-3 w-3" /> {c.students?.length || 0}</span>
-                                <span className="flex items-center gap-1"><Video className="h-3 w-3" /> {c.cameras?.length || 0}</span>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={c.isActive ? 'default' : 'secondary'} className="font-normal gap-1.5">
-                                {c.isActive ? 'Active' : 'Offline'}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex items-center justify-end gap-1">
-                                <Button variant="ghost" size="icon" onClick={() => openEditClassroom(c)}>
-                                  <Pencil className="h-4 w-4 text-muted-foreground" />
-                                </Button>
-                                <Button variant="ghost" size="icon" onClick={() => handleDeleteClassroom(c._id, c.name)}>
-                                  <Trash2 className="h-4 w-4 text-muted-foreground" />
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </CardContent>
-                </Card>
+                          {classrooms.map((c) => (
+                            <TableRow key={c._id}>
+                              <TableCell>
+                                <div className="font-medium text-slate-900">{c.name}</div>
+                                {c.description && <div className="text-xs text-muted-foreground mt-0.5">{c.description}</div>}
+                              </TableCell>
+                              <TableCell className="text-muted-foreground">{c.teacher?.displayName || '—'}</TableCell>
+                              <TableCell>
+                                {c.mediaRoomId ? (
+                                  <div className="flex items-center gap-1.5 text-xs">
+                                    <Camera className="h-3 w-3 text-slate-400" />
+                                    <span className="font-medium">{c.mediaRoomName || c.mediaRoomId}</span>
+                                  </div>
+                                ) : (
+                                  <span className="text-xs text-slate-400">—</span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <div className="text-xs text-muted-foreground flex gap-3">
+                                  <span className="flex items-center gap-1"><Users className="h-3 w-3" /> {c.students?.length || 0}</span>
+                                  <span className="flex items-center gap-1"><Video className="h-3 w-3" /> {c.cameras?.length || 0}</span>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                {getStatusBadge(c.classStatus || 'idle')}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  <Button variant="ghost" size="icon" onClick={() => openEditClassroom(c)}>
+                                    <Pencil className="h-4 w-4 text-muted-foreground" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon" onClick={() => handleDeleteClassroom(c._id, c.name)}>
+                                    <Trash2 className="h-4 w-4 text-muted-foreground" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  </Card>
                 </>
               )}
             </div>
