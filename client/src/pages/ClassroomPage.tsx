@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, LogOut, MonitorPlay, X, Play, Square, Loader2, BookOpen, GraduationCap, Users } from 'lucide-react';
+import { ArrowLeft, LogOut, MonitorPlay, X, Play, Square, Loader2, BookOpen, GraduationCap, Users, Copy, Check, Settings, ChevronDown, ChevronUp } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DraggableCore } from 'react-draggable';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -21,6 +21,14 @@ interface Camera {
   description?: string;
 }
 
+interface TeacherStream {
+  streamId: string;
+  masterUrl: string;
+  ingestUrl: string;
+  serverUrl: string;
+  streamKey: string;
+}
+
 interface ClassroomData {
   _id: string;
   name: string;
@@ -34,6 +42,7 @@ interface ClassroomData {
   classStatus: 'idle' | 'live' | 'ended';
   mediaRoomId: string;
   mediaRoomName: string;
+  teacherStream: TeacherStream | null;
 }
 
 export default function ClassroomPage() {
@@ -48,7 +57,27 @@ export default function ClassroomPage() {
   const [isEnding, setIsEnding] = useState(false);
   const [showEndedOverlay, setShowEndedOverlay] = useState(false);
   const [endedCountdown, setEndedCountdown] = useState(5);
+  const [showStreamSetup, setShowStreamSetup] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
+
+  const copyToClipboard = async (text: string, field: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    } catch {
+      // fallback
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    }
+  };
 
   const fetchClassroom = useCallback(async () => {
     if (!id) return;
@@ -84,9 +113,10 @@ export default function ClassroomPage() {
 
     socket.on('class_started', (data: any) => {
       if (data.classroomId === id) {
-        // Refresh classroom data to get updated cameras and status
         fetchClassroom();
-        toast.success('Lớp học đã bắt đầu!');
+        if (userRoleRef.current !== 'teacher' && userRoleRef.current !== 'admin') {
+          toast.success('Lớp học đã bắt đầu!');
+        }
       }
     });
 
@@ -96,9 +126,7 @@ export default function ClassroomPage() {
         if (userRoleRef.current !== 'teacher') {
           setShowEndedOverlay(true);
         } else {
-          // For teacher, just refresh
           fetchClassroom();
-          toast.info('Lớp học đã kết thúc');
         }
       }
     });
@@ -133,6 +161,10 @@ export default function ClassroomPage() {
     try {
       const res = await classroomAPI.startClass(id);
       setClassroom(res.data.classroom);
+      // Auto-show stream setup panel if teacher stream exists
+      if (res.data.classroom?.teacherStream) {
+        setShowStreamSetup(true);
+      }
       toast.success('Đã mở lớp thành công!');
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Không thể mở lớp');
@@ -381,19 +413,120 @@ export default function ClassroomPage() {
             {isTeacher ? 'Giáo viên' : 'Học sinh'}
           </Badge>
 
+          {/* Stream Setup Toggle */}
+          {isTeacher && classIsLive && classroom.teacherStream && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className={`gap-2 text-xs font-medium transition-colors ${
+                showStreamSetup
+                  ? 'bg-blue-500 text-white hover:bg-blue-600'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+              onClick={() => setShowStreamSetup(!showStreamSetup)}
+            >
+              <Settings className="h-4 w-4" />
+              OBS Setup
+              {showStreamSetup ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            </Button>
+          )}
+
           <Button variant="ghost" size="icon" onClick={logout} className="text-slate-500 hover:bg-slate-100 hover:text-red-500" title="Đăng xuất">
             <LogOut className="h-4 w-4" />
           </Button>
         </div>
       </header>
 
+      {/* Teacher Stream Setup Panel */}
+      {isTeacher && showStreamSetup && classroom.teacherStream && (
+        <div className="shrink-0 border-b border-blue-200 bg-gradient-to-r from-blue-50 via-indigo-50 to-blue-50">
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500 text-white">
+                  <Settings className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Cấu hình OBS / Phần mềm stream</h3>
+                  <p className="text-[11px] text-slate-500">Sao chép thông tin bên dưới vào OBS để bắt đầu stream</p>
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-slate-400 hover:text-slate-600"
+                onClick={() => setShowStreamSetup(false)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {/* Server URL */}
+              <div className="flex items-center gap-2 rounded-lg bg-white border border-slate-200 px-3 py-2">
+                <div className="shrink-0">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Server</span>
+                </div>
+                <code className="flex-1 text-xs font-mono text-slate-700 truncate" title={classroom.teacherStream.serverUrl}>
+                  {classroom.teacherStream.serverUrl}
+                </code>
+                <button
+                  onClick={() => copyToClipboard(classroom.teacherStream!.serverUrl, 'server')}
+                  className="shrink-0 flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-all hover:bg-slate-100"
+                  style={{ color: copiedField === 'server' ? '#16a34a' : '#64748b' }}
+                >
+                  {copiedField === 'server' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedField === 'server' ? 'Đã chép!' : 'Copy'}
+                </button>
+              </div>
+
+              {/* Stream Key */}
+              <div className="flex items-center gap-2 rounded-lg bg-white border border-slate-200 px-3 py-2">
+                <div className="shrink-0">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Stream Key</span>
+                </div>
+                <code className="flex-1 text-xs font-mono text-slate-700 truncate" title={classroom.teacherStream.streamKey}>
+                  {classroom.teacherStream.streamKey}
+                </code>
+                <button
+                  onClick={() => copyToClipboard(classroom.teacherStream!.streamKey, 'key')}
+                  className="shrink-0 flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-all hover:bg-slate-100"
+                  style={{ color: copiedField === 'key' ? '#16a34a' : '#64748b' }}
+                >
+                  {copiedField === 'key' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedField === 'key' ? 'Đã chép!' : 'Copy'}
+                </button>
+              </div>
+            </div>
+
+            {/* Full RTMP URL for convenience */}
+            <div className="mt-2 flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2">
+              <div className="shrink-0">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400">Full URL</span>
+              </div>
+              <code className="flex-1 text-xs font-mono text-slate-300 truncate" title={classroom.teacherStream.ingestUrl}>
+                {classroom.teacherStream.ingestUrl}
+              </code>
+              <button
+                onClick={() => copyToClipboard(classroom.teacherStream!.ingestUrl, 'full')}
+                className="shrink-0 flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-all hover:bg-slate-800"
+                style={{ color: copiedField === 'full' ? '#4ade80' : '#94a3b8' }}
+              >
+                {copiedField === 'full' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {copiedField === 'full' ? 'Đã chép!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden relative">
         {/* Left/Center Workspace */}
         <main className="flex flex-1 flex-col bg-slate-100 p-2 relative">
           <div className="relative flex-1 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            {classIsLive && classroom.cameras.length > 0 ? (
-              <CameraPanel cameras={classroom.cameras} />
+            {classIsLive && (classroom.cameras.length > 0 || classroom.teacherStream) ? (
+              <CameraPanel cameras={classroom.cameras} teacherStream={classroom.teacherStream} />
             ) : (
               <div className="flex h-full items-center justify-center bg-slate-900 text-slate-400">
                 <div className="flex flex-col items-center gap-4 text-center">

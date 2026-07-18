@@ -1,10 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
-import { Excalidraw, MainMenu } from '@excalidraw/excalidraw';
-import { classroomAPI } from '../services/api';
 import { Button } from '@/components/ui/button';
-import { CheckCircle2, Cloud, CloudOff, Loader2, PenTool, Trash2 } from 'lucide-react';
+import { Excalidraw, MainMenu } from '@excalidraw/excalidraw';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
 import type { AppState } from '@excalidraw/excalidraw/types/types';
+import { Cloud, CloudOff, Loader2, PenTool, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { classroomAPI } from '../services/api';
 
 interface WhiteboardProps {
   classroomId: string;

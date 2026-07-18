@@ -7,6 +7,14 @@ export interface ICamera {
   description?: string;
 }
 
+export interface ITeacherStream {
+  streamId: string;
+  masterUrl: string;
+  ingestUrl: string;
+  serverUrl: string;
+  streamKey: string;
+}
+
 export interface IRaiseHand {
   student: Types.ObjectId;
   timestamp: Date;
@@ -22,6 +30,7 @@ export interface IClassroom extends Document {
   students: Types.ObjectId[];
   ermisChannelId: string;
   ermisChannelType: string;
+  teacherStream: ITeacherStream | null;
   raiseHandQueue: IRaiseHand[];
   isActive: boolean;
   mediaRoomId: string;
@@ -53,6 +62,17 @@ const raiseHandSchema = new Schema<IRaiseHand>(
     dmChannelCid: { type: String, default: '' },
   },
   { _id: true },
+);
+
+const teacherStreamSchema = new Schema<ITeacherStream>(
+  {
+    streamId: { type: String, required: true },
+    masterUrl: { type: String, required: true },
+    ingestUrl: { type: String, default: '' },
+    serverUrl: { type: String, default: '' },
+    streamKey: { type: String, default: '' },
+  },
+  { _id: false },
 );
 
 const classroomSchema = new Schema<IClassroom>(
@@ -88,6 +108,10 @@ const classroomSchema = new Schema<IClassroom>(
     ermisChannelType: {
       type: String,
       default: 'team',
+    },
+    teacherStream: {
+      type: teacherStreamSchema,
+      default: null,
     },
     raiseHandQueue: {
       type: [raiseHandSchema],

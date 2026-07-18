@@ -281,6 +281,19 @@ router.post(
         }));
       }
 
+      // Save teacher stream (audio + video)
+      if (startData.teacher_stream) {
+        classroom.teacherStream = {
+          streamId: startData.teacher_stream.stream_id || '',
+          masterUrl: startData.teacher_stream.master_url || '',
+          ingestUrl: startData.teacher_stream.ingest_url || '',
+          serverUrl: startData.teacher_stream.server_url || '',
+          streamKey: startData.teacher_stream.stream_key || '',
+        };
+      } else {
+        classroom.teacherStream = null;
+      }
+
       classroom.classStatus = 'live';
       await classroom.save();
 
@@ -288,6 +301,7 @@ router.post(
       getIO().to(`classroom_${classroom._id}`).emit('class_started', {
         classroomId: classroom._id,
         cameras: classroom.cameras,
+        teacherStream: classroom.teacherStream,
       });
 
       await classroom.populate('teacher', 'displayName username avatar role ermisUserId');
@@ -347,6 +361,8 @@ router.post(
         url: '',
         description: cam.description || '',
       })) as any;
+      // Clear teacher stream
+      classroom.teacherStream = null;
       await classroom.save();
 
       // Emit socket event to notify students

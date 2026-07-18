@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Hls from 'hls.js';
 
 interface Camera {
@@ -7,8 +7,17 @@ interface Camera {
   description?: string;
 }
 
+interface TeacherStream {
+  streamId: string;
+  masterUrl: string;
+  ingestUrl: string;
+  serverUrl: string;
+  streamKey: string;
+}
+
 interface CameraPanelProps {
   cameras: Camera[];
+  teacherStream?: TeacherStream | null;
 }
 
 // ---- SVG Icons ----
@@ -34,7 +43,7 @@ const ExitFullscreenIcon = () => (
 type PlayerStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
 // ---- HLS Camera Player ----
-function HLSCameraPlayer({ url, name, description }: { url: string; name: string; description?: string }) {
+function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: string; name: string; description?: string; isTeacherStream?: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -45,7 +54,7 @@ function HLSCameraPlayer({ url, name, description }: { url: string; name: string
   const [status, setStatus] = useState<PlayerStatus>('idle');
   const [statusMsg, setStatusMsg] = useState('');
   const [isPaused, setIsPaused] = useState(true);
-  const [isMuted, setIsMuted] = useState(true);
+  const [isMuted, setIsMuted] = useState(!isTeacherStream); // Teacher stream unmuted by default
   const [volume, setVolume] = useState(1);
   const [controlsVisible, setControlsVisible] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -319,6 +328,11 @@ function HLSCameraPlayer({ url, name, description }: { url: string; name: string
 
       {/* Top badges */}
       <div className="absolute top-3 left-3 z-10 flex gap-1.5 pointer-events-none">
+        {isTeacherStream && (
+          <div className="bg-blue-600 text-white px-2 py-0.5 rounded text-[11px] font-bold tracking-wider flex items-center gap-1">
+            🎤 Giáo viên
+          </div>
+        )}
         {status === 'connected' && (
           <div className="bg-red-600 text-white px-2 py-0.5 rounded text-[11px] font-bold tracking-wider">
             ● LIVE
@@ -413,17 +427,44 @@ function HLSCameraPlayer({ url, name, description }: { url: string; name: string
 }
 
 // ---- Camera Panel (multi-cam layout) ----
-export default function CameraPanel({ cameras }: CameraPanelProps) {
+export default function CameraPanel({ cameras, teacherStream }: CameraPanelProps) {
+  // Build combined list: teacher stream first (with audio), then cameras (video-only)
+  const allFeeds = useMemo(() => {
+    const feeds: { name: string; url: string; description?: string; isTeacherStream: boolean }[] = [];
+    
+    if (teacherStream && teacherStream.masterUrl) {
+      feeds.push({
+        name: 'Giáo viên',
+        url: teacherStream.masterUrl,
+        description: 'Hình + Tiếng',
+        isTeacherStream: true,
+      });
+    }
+    
+    cameras.forEach((cam) => {
+      if (cam.url) {
+        feeds.push({
+          name: cam.name,
+          url: cam.url,
+          description: cam.description,
+          isTeacherStream: false,
+        });
+      }
+    });
+    
+    return feeds;
+  }, [cameras, teacherStream]);
+
   const [activeIndex, setActiveIndex] = useState(0);
   const thumbnailRefs = useRef<(HTMLVideoElement | null)[]>([]);
 
-  const activeCamera = cameras[activeIndex];
+  const activeFeed = allFeeds[activeIndex];
 
   // Initialize thumbnail streams (muted, low quality previews)
   useEffect(() => {
     const hlsInstances: Hls[] = [];
 
-    cameras.forEach((cam, i) => {
+    allFeeds.forEach((feed, i) => {
       const thumbEl = thumbnailRefs.current[i];
       if (!thumbEl || i === activeIndex) return;
 
@@ -433,14 +474,14 @@ export default function CameraPanel({ cameras }: CameraPanelProps) {
           maxBufferLength: 5,
           maxMaxBufferLength: 10,
         });
-        hls.loadSource(cam.url);
+        hls.loadSource(feed.url);
         hls.attachMedia(thumbEl);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           thumbEl.play().catch(() => {});
         });
         hlsInstances.push(hls);
       } else if (thumbEl.canPlayType('application/vnd.apple.mpegurl')) {
-        thumbEl.src = cam.url;
+        thumbEl.src = feed.url;
         thumbEl.play().catch(() => {});
       }
     });
@@ -448,7 +489,7 @@ export default function CameraPanel({ cameras }: CameraPanelProps) {
     return () => {
       hlsInstances.forEach((h) => h.destroy());
     };
-  }, [cameras, activeIndex]);
+  }, [allFeeds, activeIndex]);
 
   const switchCamera = (index: number) => {
     if (index === activeIndex) return;
@@ -459,20 +500,21 @@ export default function CameraPanel({ cameras }: CameraPanelProps) {
     <div className="flex h-full w-full flex-col gap-2 p-2">
       {/* Main Video Feed */}
       <div className="relative flex-1 overflow-hidden rounded-xl border border-slate-800 bg-black shadow-lg">
-        {activeCamera && (
+        {activeFeed && (
           <HLSCameraPlayer
-            key={`cam-${activeIndex}-${activeCamera.url}`}
-            url={activeCamera.url}
-            name={activeCamera.name}
-            description={activeCamera.description}
+            key={`feed-${activeIndex}-${activeFeed.url}`}
+            url={activeFeed.url}
+            name={activeFeed.name}
+            description={activeFeed.description}
+            isTeacherStream={activeFeed.isTeacherStream}
           />
         )}
       </div>
 
       {/* Camera Thumbnails */}
-      {cameras.length > 1 && (
+      {allFeeds.length > 1 && (
         <div className="flex h-24 shrink-0 gap-2 overflow-x-auto overflow-y-hidden py-1 hide-scrollbar">
-          {cameras.map((cam, i) => (
+          {allFeeds.map((feed, i) => (
             <button
               key={i}
               className={`relative h-full aspect-video shrink-0 overflow-hidden rounded-lg border-2 transition-all ${
@@ -496,7 +538,12 @@ export default function CameraPanel({ cameras }: CameraPanelProps) {
                 />
               )}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 text-left">
-                <span className="truncate text-[10px] font-medium text-white">{cam.name}</span>
+                <div className="flex items-center gap-1">
+                  {feed.isTeacherStream && (
+                    <span className="text-[9px] bg-blue-600 text-white px-1 rounded">🎤</span>
+                  )}
+                  <span className="truncate text-[10px] font-medium text-white">{feed.name}</span>
+                </div>
               </div>
             </button>
           ))}
