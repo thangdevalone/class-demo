@@ -255,17 +255,52 @@ router.post(
 
       // Call media server to start the room
       console.log(`[Classroom] Starting media room: ${classroom.mediaRoomId}`);
-      const startResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
+      let startResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
 
+      // If room is already running, auto-stop then retry start
       if (!startResponse.ok) {
         const errorText = await startResponse.text();
-        console.error(`[Classroom] Media server start failed:`, errorText);
-        res.status(500).json({ error: 'Failed to start media room' });
-        return;
+        const isAlreadyRunning = errorText.includes('room already running');
+
+        if (isAlreadyRunning) {
+          console.log(`[Classroom] Room already running, auto-stopping first...`);
+          try {
+            const stopResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+            });
+            if (!stopResponse.ok) {
+              console.error(`[Classroom] Auto-stop failed:`, await stopResponse.text());
+            } else {
+              console.log(`[Classroom] Auto-stop successful, retrying start...`);
+            }
+          } catch (stopError) {
+            console.error('[Classroom] Error during auto-stop:', stopError);
+          }
+
+          // Retry start after stop
+          startResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+
+          if (!startResponse.ok) {
+            const retryErrorText = await startResponse.text();
+            console.error(`[Classroom] Media server start failed after retry:`, retryErrorText);
+            res.status(500).json({ error: 'Failed to start media room after auto-restart' });
+            return;
+          }
+        } else {
+          console.error(`[Classroom] Media server start failed:`, errorText);
+          res.status(500).json({ error: 'Failed to start media room' });
+          return;
+        }
       }
 
       const startData: any = await startResponse.json();
