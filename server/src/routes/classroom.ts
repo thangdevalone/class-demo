@@ -7,7 +7,7 @@ import { getIO } from '../socket';
 
 const router = Router();
 
-const MEDIA_SERVER_URL = 'https://classroom-mediaserver.ermis.network';
+const MEDIA_SERVER_URL = 'https://ms-motix.ermis.network';
 
 // ==================== MEDIA SERVER PROXY ====================
 
@@ -258,7 +258,7 @@ router.post(
       let startResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ transcode_mode: true }),
       });
 
       // If room is already running, auto-stop then retry start
@@ -287,7 +287,7 @@ router.post(
           startResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ transcode_mode: true }),
           });
 
           if (!startResponse.ok) {
