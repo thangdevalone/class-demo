@@ -11,7 +11,6 @@ export default defineConfig({
     },
     server: {
         port: 5173,
-        allowedHosts: ['5173thangdev.ermis.network']
     },
     define: {
         global: 'globalThis',

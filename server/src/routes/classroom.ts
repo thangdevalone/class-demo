@@ -7,7 +7,7 @@ import { getIO } from '../socket';
 
 const router = Router();
 
-const MEDIA_SERVER_URL = 'https://ms-motix.ermis.network';
+const MEDIA_SERVER_URL = process.env.MEDIA_SERVER_URL || 'https://dev-ms-motix.ermis.network';
 
 // ==================== MEDIA SERVER PROXY ====================
 

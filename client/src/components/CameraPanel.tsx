@@ -460,6 +460,11 @@ export default function CameraPanel({ cameras, teacherStream }: CameraPanelProps
 
   const activeFeed = allFeeds[activeIndex];
 
+  // Find teacher stream index (always index 0 if exists)
+  const teacherFeedIndex = allFeeds.findIndex(f => f.isTeacherStream);
+  const teacherFeed = teacherFeedIndex >= 0 ? allFeeds[teacherFeedIndex] : null;
+  const isViewingTeacher = activeIndex === teacherFeedIndex;
+
   // Initialize thumbnail streams (muted, low quality previews)
   useEffect(() => {
     const hlsInstances: Hls[] = [];
@@ -467,6 +472,8 @@ export default function CameraPanel({ cameras, teacherStream }: CameraPanelProps
     allFeeds.forEach((feed, i) => {
       const thumbEl = thumbnailRefs.current[i];
       if (!thumbEl || i === activeIndex) return;
+      // Skip teacher stream thumbnail — it's always playing via the persistent player
+      if (feed.isTeacherStream) return;
 
       if (Hls.isSupported()) {
         const hls = new Hls({
@@ -500,14 +507,42 @@ export default function CameraPanel({ cameras, teacherStream }: CameraPanelProps
     <div className="flex h-full w-full flex-col gap-2 p-2">
       {/* Main Video Feed */}
       <div className="relative flex-1 overflow-hidden rounded-xl border border-slate-800 bg-black shadow-lg">
-        {activeFeed && (
-          <HLSCameraPlayer
-            key={`feed-${activeIndex}-${activeFeed.url}`}
-            url={activeFeed.url}
-            name={activeFeed.name}
-            description={activeFeed.description}
-            isTeacherStream={activeFeed.isTeacherStream}
-          />
+        {/*
+          Teacher stream is ALWAYS rendered to keep audio alive.
+          When viewing another camera, teacher stream is hidden (off-screen)
+          but still plays audio. The active non-teacher camera is shown on top.
+        */}
+        {teacherFeed && (
+          <div
+            className="absolute inset-0 w-full h-full"
+            style={{
+              // When viewing teacher: visible. When viewing other cam: hidden but still playing audio.
+              zIndex: isViewingTeacher ? 1 : -1,
+              opacity: isViewingTeacher ? 1 : 0,
+              pointerEvents: isViewingTeacher ? 'auto' : 'none',
+            }}
+          >
+            <HLSCameraPlayer
+              key={`teacher-stream-persistent`}
+              url={teacherFeed.url}
+              name={teacherFeed.name}
+              description={teacherFeed.description}
+              isTeacherStream={true}
+            />
+          </div>
+        )}
+
+        {/* Active non-teacher camera feed */}
+        {activeFeed && !activeFeed.isTeacherStream && (
+          <div className="absolute inset-0 w-full h-full" style={{ zIndex: 2 }}>
+            <HLSCameraPlayer
+              key={`feed-${activeIndex}-${activeFeed.url}`}
+              url={activeFeed.url}
+              name={activeFeed.name}
+              description={activeFeed.description}
+              isTeacherStream={false}
+            />
+          </div>
         )}
       </div>
 
