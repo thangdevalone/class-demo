@@ -160,6 +160,10 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
       onLoaded();
     });
 
+    hls.on(Hls.Events.FRAG_PARSED, () => {
+      mediaErrorCountRef.current = 0;
+    });
+
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       if (data.fatal) {
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
@@ -168,9 +172,9 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
           setTimeout(() => hlsRef.current?.startLoad(), 2000);
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           mediaErrorCountRef.current += 1;
-          if (mediaErrorCountRef.current <= 2) {
-            setStatus('error');
-            setStatusMsg(`Lỗi media – đang phục hồi (${mediaErrorCountRef.current})…`);
+          if (mediaErrorCountRef.current <= 3) {
+            // Phục hồi ngầm (silent recovery) – KHÔNG đổi sang 'error' để tránh làm hiện overlay đỏ che kín video
+            console.warn(`[HLS] Media error attempt ${mediaErrorCountRef.current}, recovering silently...`);
             hls.recoverMediaError();
           } else {
             mediaErrorCountRef.current = 0;
