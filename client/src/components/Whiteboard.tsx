@@ -226,13 +226,15 @@ export default function Whiteboard({ classroomId }: WhiteboardProps) {
         </div>
       </div>
 
-      <div className="flex-1 relative overflow-hidden bg-white custom-excalidraw-wrapper">
+      <div className="flex-1 relative overflow-hidden bg-white custom-excalidraw-wrapper" style={{ minHeight: 0 }}>
         <style dangerouslySetInnerHTML={{__html: `
           .custom-excalidraw-wrapper .layer-ui__library { display: none !important; }
           .custom-excalidraw-wrapper .sidebar-trigger { display: none !important; }
           .custom-excalidraw-wrapper button[aria-label="Library"] { display: none !important; }
+          .custom-excalidraw-wrapper .excalidraw { width: 100% !important; height: 100% !important; }
+          .custom-excalidraw-wrapper .excalidraw .App-menu { z-index: 5 !important; }
         `}} />
-        <div className="absolute inset-0">
+        <div style={{ width: '100%', height: '100%' }}>
           <Excalidraw
             excalidrawAPI={(api) => setExcalidrawAPI(api)}
             theme="light"

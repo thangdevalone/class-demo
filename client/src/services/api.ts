@@ -66,11 +66,24 @@ export const classroomAPI = {
     api.post(`/classrooms/${classroomId}/unregister`),
 
   // Class control
-  startClass: (classroomId: string) =>
-    api.post(`/classrooms/${classroomId}/start-class`),
+  startClass: (classroomId: string, options?: { recordEnabled?: boolean }) =>
+    api.post(`/classrooms/${classroomId}/start-class`, options || {}),
 
   endClass: (classroomId: string) =>
     api.post(`/classrooms/${classroomId}/end-class`),
+
+  // Recording
+  getRecordings: (classroomId: string, params?: {
+    limit?: number;
+    cursor?: string;
+    status?: string;
+  }) => api.get(`/classrooms/${classroomId}/recordings`, { params }),
+
+  getRecording: (classroomId: string) =>
+    api.get(`/classrooms/${classroomId}/recording`),
+
+  deleteRecording: (classroomId: string, sessionId: string) =>
+    api.delete(`/classrooms/${classroomId}/recording`, { params: { session: sessionId } }),
 
   // Media server proxy
   getMediaRooms: () => api.get('/classrooms/media/rooms'),

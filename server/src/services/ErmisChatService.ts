@@ -56,7 +56,8 @@ export class ErmisChatService {
       const { client, user } = await this.getAdminClient();
       
       // Ensure system admin is also in the channel, plus all students/teachers
-      const members = [user.me.id, ...memberErmisIds];
+      const adminId = user?.me?.id || client.userID || client.user?.id || 'system-admin';
+      const members = Array.from(new Set([adminId, ...memberErmisIds]));
       
       // Using 'meeting' as the default channel type
       const channel = client.channel('meeting', {
@@ -68,9 +69,6 @@ export class ErmisChatService {
 
       await channel.create();
       console.log(`[ErmisChatService] Chat channel created successfully: ${channel.cid}`);
-      
-      // Always disconnect admin client after use if it's transient
-
       
       return channel.cid;
     } catch (error: any) {

@@ -16,11 +16,14 @@ import {
   School,
   Trash2,
   Users,
-  Video, BookOpen, GraduationCap, Eye, EyeOff, Loader2, Radio, Camera
+  Video, BookOpen, GraduationCap, Eye, EyeOff, Loader2, Radio, Camera,
+  ChevronDown, ChevronUp, Download, Clock, HardDrive, Check, X, Circle, RefreshCw, Play
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import Hls from 'hls.js';
+import { useEffect, useState, Fragment, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { authAPI, classroomAPI } from '../services/api';
+import { downloadWithProgress } from '../services/downloadManager';
 
 type Section = 'users' | 'classrooms';
 
@@ -77,6 +80,15 @@ export default function AdminPage() {
   const [roomCameras, setRoomCameras] = useState<MediaCamera[]>([]);
   const [camerasLoading, setCamerasLoading] = useState(false);
 
+  // Recordings
+  const [expandedClassroom, setExpandedClassroom] = useState<string | null>(null);
+  const [classRecordings, setClassRecordings] = useState<any[]>([]);
+  const [recordingsLoading, setRecordingsLoading] = useState(false);
+  const [recordingsCursor, setRecordingsCursor] = useState<string | null>(null);
+  const [playingSessionId, setPlayingSessionId] = useState<string | null>(null);
+  const hlsPlayerRef = useRef<HTMLVideoElement | null>(null);
+  const hlsInstanceRef = useRef<Hls | null>(null);
+
   const fetchData = async () => {
     try {
       const [usersRes, classroomsRes] = await Promise.all([authAPI.getUsers(), classroomAPI.list()]);
@@ -87,6 +99,147 @@ export default function AdminPage() {
   };
 
   useEffect(() => { fetchData(); }, []);
+
+  // Fetch recordings for a classroom
+  const fetchClassRecordings = async (classroomId: string, cursor?: string) => {
+    setRecordingsLoading(true);
+    try {
+      const params: any = { limit: 10 };
+      if (cursor) params.cursor = cursor;
+      const res = await classroomAPI.getRecordings(classroomId, params);
+      if (cursor) {
+        setClassRecordings(prev => [...prev, ...(res.data.items || [])]);
+      } else {
+        setClassRecordings(res.data.items || []);
+      }
+      setRecordingsCursor(res.data.next_cursor || null);
+    } catch (err) {
+      console.error('Failed to fetch recordings:', err);
+      setClassRecordings([]);
+    } finally {
+      setRecordingsLoading(false);
+    }
+  };
+
+  const toggleExpandClassroom = (classroomId: string) => {
+    if (expandedClassroom === classroomId) {
+      setExpandedClassroom(null);
+      setClassRecordings([]);
+      setRecordingsCursor(null);
+    } else {
+      setExpandedClassroom(classroomId);
+      fetchClassRecordings(classroomId);
+    }
+  };
+
+  const handleDeleteRecording = async (classroomId: string, sessionId: string) => {
+    if (!window.confirm('Bạn có chắc muốn xóa bản ghi này?')) return;
+    try {
+      await classroomAPI.deleteRecording(classroomId, sessionId);
+      setClassRecordings(prev => prev.filter(r => r.lesson_session_id !== sessionId));
+      toast.success('Đã xóa bản ghi');
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Không thể xóa bản ghi');
+    }
+  };
+
+  const formatDuration = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+
+  const formatDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  const handlePlayRecording = (hlsUrl: string, sessionId: string) => {
+    if (!hlsUrl) {
+      toast.error('HLS chưa sẵn sàng');
+      return;
+    }
+    setPlayingSessionId(sessionId);
+  };
+
+  const closePlayer = () => {
+    if (hlsInstanceRef.current) { hlsInstanceRef.current.destroy(); hlsInstanceRef.current = null; }
+    setPlayingSessionId(null);
+  };
+
+  useEffect(() => {
+    if (!playingSessionId) return;
+
+    let cancelled = false;
+    let retryCount = 0;
+    const maxRetries = 30; // ~500ms max wait
+
+    function tryPlay() {
+      if (cancelled) return;
+      const video = hlsPlayerRef.current;
+      if (!video) {
+        retryCount++;
+        if (retryCount < maxRetries) {
+          requestAnimationFrame(tryPlay);
+        }
+        return;
+      }
+
+      const rec = classRecordings.find((r: any) => r.lesson_session_id === playingSessionId);
+      if (!rec?.hls_url) {
+        toast.error('Không thể phát bản ghi');
+        return;
+      }
+
+      // Play directly from Media Server (no auth needed, better performance)
+      const MS_URL = import.meta.env.VITE_MEDIA_SERVER_URL || '';
+      const hlsUrl = `${MS_URL}${rec.hls_url}`;
+      console.log('[Recording] Playing HLS:', hlsUrl);
+
+      if (hlsInstanceRef.current) hlsInstanceRef.current.destroy();
+
+      if (Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+        hls.on(Hls.Events.ERROR, (_: any, data: any) => {
+          if (data.fatal) {
+            console.error('HLS fatal error:', data);
+            toast.error('Không thể phát bản ghi');
+          }
+        });
+        hlsInstanceRef.current = hls;
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = hlsUrl;
+        video.play();
+      }
+    }
+
+    requestAnimationFrame(tryPlay);
+
+    return () => {
+      cancelled = true;
+      if (hlsInstanceRef.current) { hlsInstanceRef.current.destroy(); hlsInstanceRef.current = null; }
+    };
+  }, [playingSessionId]);
+
+  const handleDownloadMp4 = (classroomId: string, sessionId: string) => {
+    const rec = classRecordings.find((r: any) => r.lesson_session_id === sessionId);
+    if (!rec?.mp4_url) {
+      toast.error('MP4 chưa sẵn sàng');
+      return;
+    }
+    const MS_URL = import.meta.env.VITE_MEDIA_SERVER_URL || '';
+    downloadWithProgress(`${MS_URL}${rec.mp4_url}`, `recording-${sessionId}.mp4`);
+  };
 
   // Fetch media rooms when classroom dialog opens
   const fetchMediaRooms = async () => {
@@ -256,6 +409,7 @@ export default function AdminPage() {
   if (user?.role !== 'admin') return <div className="flex items-center justify-center h-screen text-red-500">Chỉ admin</div>;
 
   return (
+    <>
     <div className="flex h-screen bg-[#F9FAFB] text-slate-900 font-sans">
       {/* Sidebar - Clean, White, subtle border */}
       <aside className="w-64 flex-shrink-0 bg-white border-r border-slate-200 flex flex-col">
@@ -602,7 +756,8 @@ export default function AdminPage() {
                         </TableHeader>
                         <TableBody>
                           {classrooms.map((c) => (
-                            <TableRow key={c._id}>
+                            <Fragment key={c._id}>
+                            <TableRow className={expandedClassroom === c._id ? 'bg-violet-50/50' : ''}>
                               <TableCell>
                                 <div className="font-medium text-slate-900">{c.name}</div>
                                 {c.description && <div className="text-xs text-muted-foreground mt-0.5">{c.description}</div>}
@@ -629,6 +784,17 @@ export default function AdminPage() {
                               </TableCell>
                               <TableCell className="text-right">
                                 <div className="flex items-center justify-end gap-1">
+                                  {c.mediaRoomId && (
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      onClick={() => toggleExpandClassroom(c._id)}
+                                      title="Xem bản ghi"
+                                      className={expandedClassroom === c._id ? 'text-violet-600' : ''}
+                                    >
+                                      {expandedClassroom === c._id ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                    </Button>
+                                  )}
                                   <Button variant="ghost" size="icon" onClick={() => openEditClassroom(c)}>
                                     <Pencil className="h-4 w-4 text-muted-foreground" />
                                   </Button>
@@ -638,6 +804,125 @@ export default function AdminPage() {
                                 </div>
                               </TableCell>
                             </TableRow>
+                            {/* Expanded recordings row */}
+                            {expandedClassroom === c._id && (
+                              <TableRow>
+                                <TableCell colSpan={6} className="bg-violet-50/30 p-0">
+                                  <div className="px-4 py-3">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <span className="text-xs font-semibold text-violet-700 flex items-center gap-1.5">
+                                        <Video className="h-3.5 w-3.5" />
+                                        Bản ghi — {c.name}
+                                      </span>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-6 text-xs text-violet-600 hover:text-violet-700"
+                                        onClick={() => fetchClassRecordings(c._id)}
+                                        disabled={recordingsLoading}
+                                      >
+                                        <RefreshCw className={`h-3 w-3 mr-1 ${recordingsLoading ? 'animate-spin' : ''}`} />
+                                        Làm mới
+                                      </Button>
+                                    </div>
+                                    {recordingsLoading && classRecordings.length === 0 ? (
+                                      <div className="flex items-center justify-center py-4">
+                                        <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+                                      </div>
+                                    ) : classRecordings.length === 0 ? (
+                                      <div className="text-center py-4 text-xs text-slate-400">Chưa có bản ghi nào</div>
+                                    ) : (
+                                      <div className="space-y-1">
+                                        {classRecordings.map((rec: any) => {
+                                          const isReady = rec.status === 'ready';
+                                          const isFinalizing = rec.status === 'finalizing';
+                                          const isFailed = rec.status === 'failed';
+                                          const isRecording = rec.status === 'recording';
+                                          return (
+                                            <Fragment key={rec.lesson_session_id}>
+                                            <div
+                                              className="flex items-center gap-3 rounded-md bg-white border border-slate-200 px-3 py-1.5 text-xs"
+                                            >
+                                              <div className="shrink-0">
+                                                {isReady && <Check className="h-3.5 w-3.5 text-emerald-500" />}
+                                                {isFinalizing && <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-500" />}
+                                                {isFailed && <X className="h-3.5 w-3.5 text-red-500" />}
+                                                {isRecording && <Circle className="h-3.5 w-3.5 fill-red-500 text-red-500 animate-pulse" />}
+                                                {!isReady && !isFinalizing && !isFailed && !isRecording && (
+                                                  <Circle className="h-3.5 w-3.5 text-slate-300" />
+                                                )}
+                                              </div>
+                                              <span className="font-medium text-[11px] text-slate-700 truncate flex-1" title={rec.lesson_session_id}>
+                                                {rec.started_at ? formatDate(rec.started_at) : rec.lesson_session_id.slice(0, 25)}
+                                              </span>
+                                              <Badge
+                                                variant="secondary"
+                                                className={`text-[9px] px-1.5 py-0 ${
+                                                  isReady ? 'bg-emerald-100 text-emerald-700' :
+                                                  isFinalizing ? 'bg-amber-100 text-amber-700' :
+                                                  isFailed ? 'bg-red-100 text-red-700' :
+                                                  isRecording ? 'bg-red-100 text-red-700' :
+                                                  'bg-slate-100 text-slate-500'
+                                                }`}
+                                              >
+                                                {rec.status}
+                                              </Badge>
+                                              {rec.duration_ms > 0 && (
+                                                <span className="flex items-center gap-0.5 text-slate-400">
+                                                  <Clock className="h-3 w-3" />
+                                                  {formatDuration(rec.duration_ms)}
+                                                </span>
+                                              )}
+                                              {rec.stored_bytes > 0 && (
+                                                <span className="flex items-center gap-0.5 text-slate-400">
+                                                  <HardDrive className="h-3 w-3" />
+                                                  {formatBytes(rec.stored_bytes)}
+                                                </span>
+                                              )}
+                                              {isReady && (
+                                                <>
+                                                  <button
+                                                    onClick={() => handlePlayRecording(rec.hls_url, rec.lesson_session_id)}
+                                                    className="inline-flex items-center gap-0.5 text-violet-600 hover:text-violet-700 transition-colors"
+                                                    disabled={!rec.hls_url}
+                                                  >
+                                                    <Play className="h-3 w-3" /> Xem
+                                                  </button>
+                                                  <button
+                                                    onClick={() => handleDownloadMp4(c._id, rec.lesson_session_id)}
+                                                    className="inline-flex items-center gap-0.5 text-slate-600 hover:text-slate-900 transition-colors"
+                                                  >
+                                                    <Download className="h-3 w-3" /> MP4
+                                                  </button>
+                                                  <button
+                                                    onClick={() => handleDeleteRecording(c._id, rec.lesson_session_id)}
+                                                    className="text-slate-400 hover:text-red-500 transition-colors"
+                                                    title="Xóa"
+                                                  >
+                                                    <Trash2 className="h-3 w-3" />
+                                                  </button>
+                                                </>
+                                              )}
+                                            </div>
+                                            </Fragment>
+                                          );
+                                        })}
+                                        {recordingsCursor && (
+                                          <button
+                                            className="w-full text-center py-1.5 text-[11px] font-medium text-violet-600 hover:bg-violet-50 rounded transition-colors"
+                                            onClick={() => fetchClassRecordings(c._id, recordingsCursor)}
+                                            disabled={recordingsLoading}
+                                          >
+                                            {recordingsLoading ? <Loader2 className="h-3 w-3 animate-spin mx-auto" /> : 'Tải thêm...'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                            </Fragment>
                           ))}
                         </TableBody>
                       </Table>
@@ -650,5 +935,27 @@ export default function AdminPage() {
         </div>
       </main>
     </div>
+
+    {/* Recording Playback Dialog */}
+    <Dialog open={!!playingSessionId} onOpenChange={(open) => { if (!open) closePlayer(); }}>
+      <DialogContent className="sm:max-w-[800px] p-0 gap-0 overflow-hidden">
+        <DialogHeader className="px-4 pt-4 pb-2">
+          <DialogTitle className="flex items-center gap-2 text-sm">
+            <Play className="h-4 w-4 text-violet-600" />
+            Xem lại bản ghi
+          </DialogTitle>
+        </DialogHeader>
+        <div className="bg-black">
+          <video
+            ref={hlsPlayerRef}
+            controls
+            autoPlay
+            className="w-full"
+            style={{ maxHeight: '70vh', aspectRatio: '16/9' }}
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

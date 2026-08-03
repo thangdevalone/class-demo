@@ -1,7 +1,10 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, LogOut, MonitorPlay, X, Play, Square, Loader2, BookOpen, GraduationCap, Users, Copy, Check, Settings, ChevronDown, ChevronUp } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ArrowLeft, LogOut, MonitorPlay, X, Play, Square, Loader2, BookOpen, GraduationCap, Users, Copy, Check, Settings, ChevronDown, ChevronUp, Circle, Download, Trash2, Video, Clock, HardDrive, RefreshCw } from 'lucide-react';
+import Hls from 'hls.js';
+import { useCallback, useEffect, useRef, useState, Fragment } from 'react';
+import { createPortal } from 'react-dom';
 import { DraggableCore } from 'react-draggable';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -11,8 +14,10 @@ import ClassChat from '../components/ClassChat';
 import Whiteboard from '../components/Whiteboard';
 import { useAuth } from '../context/AuthContext';
 import { classroomAPI } from '../services/api';
+import { downloadWithProgress } from '../services/downloadManager';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
+const MEDIA_SERVER_URL = import.meta.env.VITE_MEDIA_SERVER_URL || '';
 
 interface Camera {
   cameraId: string;
@@ -43,6 +48,30 @@ interface ClassroomData {
   mediaRoomId: string;
   mediaRoomName: string;
   teacherStream: TeacherStream | null;
+  lessonSessionId?: string;
+  recordingEnabled?: boolean;
+  recordingStatus?: 'none' | 'recording' | 'finalizing' | 'ready' | 'partial' | 'interrupted' | 'failed' | 'deleting';
+  recordingHlsUrl?: string;
+  recordingMp4Url?: string;
+}
+
+interface RecordingItem {
+  lesson_session_id: string;
+  room_id?: string;
+  teacher_stream_id?: string;
+  status: string;
+  hls_status: string;
+  mp4_status: string;
+  duration_ms: number;
+  stored_bytes: number;
+  segment_count?: number;
+  discontinuity_count?: number;
+  has_gap?: boolean;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  hls_url: string | null;
+  mp4_url: string | null;
+  started_at?: string;
 }
 
 export default function ClassroomPage() {
@@ -59,6 +88,14 @@ export default function ClassroomPage() {
   const [endedCountdown, setEndedCountdown] = useState(5);
   const [showStreamSetup, setShowStreamSetup] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [recordEnabled, setRecordEnabled] = useState(false);
+  const [recordings, setRecordings] = useState<RecordingItem[]>([]);
+  const [recordingsLoading, setRecordingsLoading] = useState(false);
+  const [recordingsCursor, setRecordingsCursor] = useState<string | null>(null);
+  const [showRecordings, setShowRecordings] = useState(false);
+  const [playingSessionId, setPlayingSessionId] = useState<string | null>(null);
+  const hlsPlayerRef = useRef<HTMLVideoElement | null>(null);
+  const hlsInstanceRef = useRef<Hls | null>(null);
   const socketRef = useRef<Socket | null>(null);
 
   const copyToClipboard = async (text: string, field: string) => {
@@ -159,18 +196,165 @@ export default function ClassroomPage() {
     if (!id || !classroom) return;
     setIsStarting(true);
     try {
-      const res = await classroomAPI.startClass(id);
+      const res = await classroomAPI.startClass(id, { recordEnabled });
       setClassroom(res.data.classroom);
       // Auto-show stream setup panel if teacher stream exists
       if (res.data.classroom?.teacherStream) {
         setShowStreamSetup(true);
       }
-      toast.success('Đã mở lớp thành công!');
+      toast.success(`Đã mở lớp thành công!${recordEnabled ? ' (Đang ghi hình)' : ''}`);
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Không thể mở lớp');
     } finally {
       setIsStarting(false);
     }
+  };
+
+  // Fetch recordings list
+  const fetchRecordings = useCallback(async (cursor?: string) => {
+    if (!id) return;
+    setRecordingsLoading(true);
+    try {
+      const params: any = { limit: 10 };
+      if (cursor) params.cursor = cursor;
+      const res = await classroomAPI.getRecordings(id, params);
+      if (cursor) {
+        setRecordings(prev => [...prev, ...(res.data.items || [])]);
+      } else {
+        setRecordings(res.data.items || []);
+      }
+      setRecordingsCursor(res.data.next_cursor || null);
+    } catch (err) {
+      console.error('Failed to fetch recordings:', err);
+    } finally {
+      setRecordingsLoading(false);
+    }
+  }, [id]);
+
+
+
+  // Load recordings when toggling recordings panel
+  useEffect(() => {
+    if (showRecordings && recordings.length === 0) {
+      fetchRecordings();
+    }
+  }, [showRecordings, fetchRecordings]);
+
+  const handleDeleteRecording = async (sessionId: string) => {
+    if (!id) return;
+    if (!window.confirm('Bạn có chắc muốn xóa bản ghi này? Hành động không thể hoàn tác.')) return;
+    try {
+      await classroomAPI.deleteRecording(id, sessionId);
+      setRecordings(prev => prev.filter(r => r.lesson_session_id !== sessionId));
+      toast.success('Đã xóa bản ghi');
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Không thể xóa bản ghi');
+    }
+  };
+
+  const formatDuration = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+
+  const formatDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  // HLS playback — play directly from Media Server like demo.html
+  const handlePlayRecording = (rec: RecordingItem) => {
+    if (!rec.hls_url) {
+      toast.error('HLS chưa sẵn sàng');
+      return;
+    }
+    setPlayingSessionId(rec.lesson_session_id);
+  };
+
+  const closePlayer = () => {
+    if (hlsInstanceRef.current) {
+      hlsInstanceRef.current.destroy();
+      hlsInstanceRef.current = null;
+    }
+    setPlayingSessionId(null);
+  };
+
+  useEffect(() => {
+    if (!playingSessionId) return;
+
+    let cancelled = false;
+    let retryCount = 0;
+    const maxRetries = 30; // ~500ms max wait
+
+    function tryPlay() {
+      if (cancelled) return;
+      const video = hlsPlayerRef.current;
+      if (!video) {
+        retryCount++;
+        if (retryCount < maxRetries) {
+          requestAnimationFrame(tryPlay);
+        }
+        return;
+      }
+
+      const rec = recordings.find(r => r.lesson_session_id === playingSessionId);
+      if (!rec?.hls_url) {
+        toast.error('Không thể phát bản ghi');
+        return;
+      }
+
+      // Play directly from Media Server (no auth needed, better performance)
+      const hlsUrl = `${MEDIA_SERVER_URL}${rec.hls_url}`;
+      console.log('[Recording] Playing HLS:', hlsUrl);
+
+      if (hlsInstanceRef.current) {
+        hlsInstanceRef.current.destroy();
+      }
+
+      if (Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+        hls.on(Hls.Events.ERROR, (_: any, data: any) => {
+          if (data.fatal) {
+            console.error('HLS fatal error:', data);
+            toast.error('Không thể phát bản ghi');
+          }
+        });
+        hlsInstanceRef.current = hls;
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = hlsUrl;
+        video.play();
+      }
+    }
+
+    requestAnimationFrame(tryPlay);
+
+    return () => {
+      cancelled = true;
+      if (hlsInstanceRef.current) {
+        hlsInstanceRef.current.destroy();
+        hlsInstanceRef.current = null;
+      }
+    };
+  }, [playingSessionId]);
+
+  const handleDownloadMp4 = (sessionId: string) => {
+    const rec = recordings.find(r => r.lesson_session_id === sessionId);
+    if (!rec?.mp4_url) {
+      toast.error('MP4 chưa sẵn sàng');
+      return;
+    }
+    downloadWithProgress(`${MEDIA_SERVER_URL}${rec.mp4_url}`, `recording-${sessionId}.mp4`);
   };
 
   const handleEndClass = async () => {
@@ -356,6 +540,16 @@ export default function ClassroomPage() {
                   <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> Chưa mở
                 </span>
               )}
+              {/* REC indicator */}
+              {classIsLive && classroom.recordingEnabled && (
+                <>
+                  <span>•</span>
+                  <span className="flex items-center gap-1 text-red-600 font-semibold">
+                    <span className="h-2 w-2 rounded-full bg-red-600 animate-pulse" />
+                    REC
+                  </span>
+                </>
+              )}
               <span>•</span>
               <span className="flex items-center gap-1"><BookOpen className="h-3 w-3" /> {classroom.teacher.displayName}</span>
               <span>•</span>
@@ -369,18 +563,37 @@ export default function ClassroomPage() {
           {isTeacher && (
             <>
               {(classIsIdle || classIsEnded) && (
-                <Button
-                  size="sm"
-                  className="gap-2 text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white"
-                  onClick={handleStartClass}
-                  disabled={isStarting}
-                >
-                  {isStarting ? (
-                    <><Loader2 className="h-4 w-4 animate-spin" /> Đang mở...</>
-                  ) : (
-                    <><Play className="h-4 w-4" /> Mở lớp</>
-                  )}
-                </Button>
+                <div className="flex items-center gap-3">
+                  {/* Recording Toggle */}
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <div
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${recordEnabled ? 'bg-red-500' : 'bg-slate-300'
+                        }`}
+                      onClick={() => setRecordEnabled(!recordEnabled)}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform ${recordEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                          }`}
+                      />
+                    </div>
+                    <span className="text-xs font-medium text-slate-600 flex items-center gap-1">
+                      <Circle className={`h-2.5 w-2.5 ${recordEnabled ? 'fill-red-500 text-red-500' : 'text-slate-400'}`} />
+                      Ghi hình
+                    </span>
+                  </label>
+                  <Button
+                    size="sm"
+                    className="gap-2 text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white"
+                    onClick={handleStartClass}
+                    disabled={isStarting}
+                  >
+                    {isStarting ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Đang mở...</>
+                    ) : (
+                      <><Play className="h-4 w-4" /> Mở lớp</>
+                    )}
+                  </Button>
+                </div>
               )}
               {classIsLive && (
                 <Button
@@ -418,16 +631,31 @@ export default function ClassroomPage() {
             <Button
               variant="ghost"
               size="sm"
-              className={`gap-2 text-xs font-medium transition-colors ${
-                showStreamSetup
+              className={`gap-2 text-xs font-medium transition-colors ${showStreamSetup
                   ? 'bg-blue-500 text-white hover:bg-blue-600'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
+                }`}
               onClick={() => setShowStreamSetup(!showStreamSetup)}
             >
               <Settings className="h-4 w-4" />
               OBS Setup
               {showStreamSetup ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            </Button>
+          )}
+
+          {/* Recordings Toggle */}
+          {(
+            <Button
+              variant="ghost"
+              size="sm"
+              className={`gap-2 text-xs font-medium transition-colors ${showRecordings
+                  ? 'bg-violet-500 text-white hover:bg-violet-600'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              onClick={() => setShowRecordings(!showRecordings)}
+            >
+              <Video className="h-4 w-4" />
+              Bản ghi
             </Button>
           )}
 
@@ -519,6 +747,156 @@ export default function ClassroomPage() {
           </div>
         </div>
       )}
+      {/* Recordings Panel */}
+      {showRecordings && (
+        <div className="shrink-0 border-b border-violet-200 bg-gradient-to-r from-violet-50 via-purple-50 to-violet-50">
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500 text-white">
+                  <Video className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Lịch sử bản ghi</h3>
+                  <p className="text-[11px] text-slate-500">Các bản ghi của lớp học này</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-slate-400 hover:text-slate-600"
+                  onClick={() => fetchRecordings()}
+                  disabled={recordingsLoading}
+                >
+                  <RefreshCw className={`h-4 w-4 ${recordingsLoading ? 'animate-spin' : ''}`} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-slate-400 hover:text-slate-600"
+                  onClick={() => setShowRecordings(false)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
+
+            {recordingsLoading && recordings.length === 0 ? (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 className="h-5 w-5 animate-spin text-violet-500" />
+              </div>
+            ) : recordings.length === 0 ? (
+              <div className="text-center py-6 text-sm text-slate-400">Chưa có bản ghi nào</div>
+            ) : (
+              <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                {recordings.map((rec) => {
+                  const isReady = rec.status === 'ready';
+                  const isFinalizing = rec.status === 'finalizing';
+                  const isFailed = rec.status === 'failed';
+                  const isRecording = rec.status === 'recording';
+
+                  return (
+                    <Fragment key={rec.lesson_session_id}>
+                      <div
+                        className="flex items-center gap-3 rounded-lg bg-white border border-slate-200 px-3 py-2"
+                      >
+                        {/* Status icon */}
+                        <div className="shrink-0">
+                          {isReady && <Check className="h-4 w-4 text-emerald-500" />}
+                          {isFinalizing && <Loader2 className="h-4 w-4 animate-spin text-amber-500" />}
+                          {isFailed && <X className="h-4 w-4 text-red-500" />}
+                          {isRecording && <Circle className="h-4 w-4 fill-red-500 text-red-500 animate-pulse" />}
+                          {!isReady && !isFinalizing && !isFailed && !isRecording && (
+                            <Circle className="h-4 w-4 text-slate-300" />
+                          )}
+                        </div>
+
+                        {/* Info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="font-medium text-slate-700">
+                              {rec.started_at ? formatDate(rec.started_at) : rec.lesson_session_id.slice(0, 20)}
+                            </span>
+                            <Badge
+                              variant="secondary"
+                              className={`text-[9px] px-1.5 py-0 ${isReady ? 'bg-emerald-100 text-emerald-700' :
+                                  isFinalizing ? 'bg-amber-100 text-amber-700' :
+                                    isFailed ? 'bg-red-100 text-red-700' :
+                                      isRecording ? 'bg-red-100 text-red-700' :
+                                        'bg-slate-100 text-slate-500'
+                                }`}
+                            >
+                              {rec.status}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-0.5">
+                            {rec.duration_ms > 0 && (
+                              <span className="flex items-center gap-1">
+                                <Clock className="h-3 w-3" />
+                                {formatDuration(rec.duration_ms)}
+                              </span>
+                            )}
+                            {rec.stored_bytes > 0 && (
+                              <span className="flex items-center gap-1">
+                                <HardDrive className="h-3 w-3" />
+                                {formatBytes(rec.stored_bytes)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {isReady && (
+                            <>
+                              <button
+                                onClick={() => handlePlayRecording(rec)}
+                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-violet-600 hover:bg-violet-100 transition-colors"
+                              >
+                                <Play className="h-3.5 w-3.5" />
+                                Xem lại
+                              </button>
+                              <button
+                                onClick={() => handleDownloadMp4(rec.lesson_session_id)}
+                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                                MP4
+                              </button>
+                              {isTeacher && (
+                                <button
+                                  onClick={() => handleDeleteRecording(rec.lesson_session_id)}
+                                  className="inline-flex items-center rounded-md p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                                  title="Xóa bản ghi"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </Fragment>
+                  );
+                })}
+
+                {/* Load more */}
+                {recordingsCursor && (
+                  <button
+                    className="w-full text-center py-2 text-xs font-medium text-violet-600 hover:text-violet-700 hover:bg-violet-50 rounded-lg transition-colors"
+                    onClick={() => fetchRecordings(recordingsCursor)}
+                    disabled={recordingsLoading}
+                  >
+                    {recordingsLoading ? <Loader2 className="h-4 w-4 animate-spin mx-auto" /> : 'Tải thêm...'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden relative">
@@ -561,16 +939,16 @@ export default function ClassroomPage() {
             )}
           </div>
 
-          {/* Draggable Whiteboard */}
-          {whiteboardOpen && (
+          {/* Draggable Whiteboard — rendered via portal to body so it's above all dialogs */}
+          {whiteboardOpen && createPortal(
             // @ts-expect-error react-draggable types are not fully compatible with React 18
             <DraggableCore
               handle=".whiteboard-drag-handle"
               onDrag={(e, data) => {
                 const node = document.getElementById('whiteboard-container');
                 if (node) {
-                  const currentTop = parseInt(node.style.top || '16', 10);
-                  const currentLeft = parseInt(node.style.left || '16', 10);
+                  const currentTop = parseInt(node.style.top || '80', 10);
+                  const currentLeft = parseInt(node.style.left || '80', 10);
                   node.style.top = `${currentTop + data.deltaY}px`;
                   node.style.left = `${currentLeft + data.deltaX}px`;
                 }
@@ -578,8 +956,8 @@ export default function ClassroomPage() {
             >
               <div
                 id="whiteboard-container"
-                className="absolute z-50 flex flex-col rounded-xl overflow-hidden shadow-2xl border border-slate-200 bg-white resize"
-                style={{ top: '16px', left: '16px', width: 600, height: 450, minWidth: 200, minHeight: 200, maxWidth: '90%', maxHeight: '90%' }}
+                className="fixed z-[9999] flex flex-col rounded-xl overflow-hidden shadow-2xl border border-slate-200 bg-white resize"
+                style={{ top: '80px', left: '80px', width: 600, height: 450, minWidth: 200, minHeight: 200, maxWidth: '90vw', maxHeight: '85vh' }}
               >
                 <div className="whiteboard-drag-handle flex items-center justify-between bg-slate-100 border-b border-slate-200 p-2 cursor-move text-slate-700 select-none">
                   <div className="flex items-center gap-2">
@@ -590,11 +968,12 @@ export default function ClassroomPage() {
                     <X className="h-4 w-4" />
                   </Button>
                 </div>
-                <div className="flex-1 relative">
+                <div className="flex-1 relative overflow-hidden" style={{ minHeight: 0 }}>
                   <Whiteboard classroomId={classroom._id} />
                 </div>
               </div>
-            </DraggableCore>
+            </DraggableCore>,
+            document.body
           )}
         </main>
 
@@ -616,6 +995,27 @@ export default function ClassroomPage() {
           </div>
         </aside>
       </div>
+
+      {/* Recording Playback Dialog */}
+      <Dialog open={!!playingSessionId} onOpenChange={(open) => { if (!open) closePlayer(); }}>
+        <DialogContent className="sm:max-w-[800px] p-0 gap-0 overflow-hidden">
+          <DialogHeader className="px-4 pt-4 pb-2">
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <Play className="h-4 w-4 text-violet-600" />
+              Xem lại bản ghi
+            </DialogTitle>
+          </DialogHeader>
+          <div className="bg-black">
+            <video
+              ref={hlsPlayerRef}
+              controls
+              autoPlay
+              className="w-full"
+              style={{ maxHeight: '70vh', aspectRatio: '16/9' }}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -7,7 +7,20 @@ import { getIO } from '../socket';
 
 const router = Router();
 
-const MEDIA_SERVER_URL = process.env.MEDIA_SERVER_URL || 'https://dev-ms-motix.ermis.network';
+const MEDIA_SERVER_URL = process.env.MEDIA_SERVER_URL || 'https://classroom-mediaserver.ermis.network';
+const MEDIA_SERVER_API_KEY = process.env.MEDIA_SERVER_API_KEY || '';
+
+// Helper: fetch from Media Server with x-api-key header
+function mediaServerFetch(url: string, options: RequestInit = {}): Promise<globalThis.Response> {
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> || {}),
+  };
+  if (MEDIA_SERVER_API_KEY) {
+    headers['x-api-key'] = MEDIA_SERVER_API_KEY;
+  }
+  console.log(`[mediaServerFetch] key set: ${!!MEDIA_SERVER_API_KEY}, key prefix: "${MEDIA_SERVER_API_KEY.slice(0,8)}..."`);
+  return fetch(url, { ...options, headers });
+}
 
 // ==================== MEDIA SERVER PROXY ====================
 
@@ -16,7 +29,7 @@ router.get('/media/rooms', authenticate, authorize('admin', 'teacher'), async (r
   try {
     const url = `${MEDIA_SERVER_URL}/rooms`;
     console.log(`[Media Proxy] Fetching rooms from: ${url}`);
-    const response = await fetch(url);
+    const response = await mediaServerFetch(url);
     console.log(`[Media Proxy] Response status: ${response.status}`);
     if (!response.ok) {
       const errorText = await response.text();
@@ -36,7 +49,7 @@ router.get('/media/rooms', authenticate, authorize('admin', 'teacher'), async (r
 // GET /api/classrooms/media/rooms/:roomId/cameras — list cameras in a room
 router.get('/media/rooms/:roomId/cameras', authenticate, authorize('admin', 'teacher'), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const response = await fetch(`${MEDIA_SERVER_URL}/rooms/${req.params.roomId}/cameras`);
+    const response = await mediaServerFetch(`${MEDIA_SERVER_URL}/rooms/${req.params.roomId}/cameras`);
     if (!response.ok) {
       res.status(response.status).json({ error: 'Failed to fetch cameras from media server' });
       return;
@@ -253,12 +266,21 @@ router.post(
         return;
       }
 
+      // Generate unique lesson session ID for recording
+      const { recordEnabled } = req.body;
+      const lessonSessionId = `cls-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
       // Call media server to start the room
-      console.log(`[Classroom] Starting media room: ${classroom.mediaRoomId}`);
-      let startResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
+      console.log(`[Classroom] Starting media room: ${classroom.mediaRoomId}, recording: ${!!recordEnabled}, session: ${lessonSessionId}`);
+      const startBody: any = {
+        lesson_session_id: lessonSessionId,
+        record_enabled: !!recordEnabled,
+        transcode_mode: true,
+      };
+      let startResponse = await mediaServerFetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcode_mode: true }),
+        body: JSON.stringify(startBody),
       });
 
       // If room is already running, auto-stop then retry start
@@ -269,7 +291,7 @@ router.post(
         if (isAlreadyRunning) {
           console.log(`[Classroom] Room already running, auto-stopping first...`);
           try {
-            const stopResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
+            const stopResponse = await mediaServerFetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({}),
@@ -284,10 +306,10 @@ router.post(
           }
 
           // Retry start after stop
-          startResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
+          startResponse = await mediaServerFetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ transcode_mode: true }),
+            body: JSON.stringify(startBody),
           });
 
           if (!startResponse.ok) {
@@ -330,6 +352,11 @@ router.post(
       }
 
       classroom.classStatus = 'live';
+      classroom.lessonSessionId = lessonSessionId;
+      classroom.recordingEnabled = !!recordEnabled;
+      classroom.recordingStatus = recordEnabled ? 'recording' : 'none';
+      classroom.recordingHlsUrl = '';
+      classroom.recordingMp4Url = '';
       await classroom.save();
 
       // Emit socket event to notify students
@@ -337,6 +364,7 @@ router.post(
         classroomId: classroom._id,
         cameras: classroom.cameras,
         teacherStream: classroom.teacherStream,
+        recordingEnabled: classroom.recordingEnabled,
       });
 
       await classroom.populate('teacher', 'displayName username avatar role ermisUserId');
@@ -375,7 +403,7 @@ router.post(
       if (classroom.mediaRoomId) {
         console.log(`[Classroom] Stopping media room: ${classroom.mediaRoomId}`);
         try {
-          const stopResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
+          const stopResponse = await mediaServerFetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({}),
@@ -389,6 +417,11 @@ router.post(
       }
 
       classroom.classStatus = 'ended';
+      // Update recording status if recording was enabled
+      if (classroom.recordingEnabled) {
+        classroom.recordingStatus = 'finalizing';
+        console.log(`[Classroom] Recording finalizing for session: ${classroom.lessonSessionId}`);
+      }
       // Clear camera URLs since streams are stopped
       classroom.cameras = classroom.cameras.map((cam: any) => ({
         cameraId: cam.cameraId,
@@ -403,6 +436,7 @@ router.post(
       // Emit socket event to notify students
       getIO().to(`classroom_${classroom._id}`).emit('class_ended', {
         classroomId: classroom._id,
+        recordingStatus: classroom.recordingStatus,
       });
 
       // Also clear raise hand queue
@@ -412,6 +446,271 @@ router.post(
       res.json({ message: 'Class ended successfully' });
     } catch (error) {
       console.error('End class error:', error);
+      res.status(500).json({ error: 'Server error' });
+    }
+  },
+);
+
+// ==================== RECORDING ====================
+
+// Helper: check if user is a member of the classroom
+function isClassroomMember(classroom: any, user: any): boolean {
+  const isTeacher = classroom.teacher.toString() === user._id.toString();
+  const isStudent = classroom.students.some((s: any) => s.toString() === user._id.toString());
+  const isAdmin = user.role === 'admin';
+  return isTeacher || isStudent || isAdmin;
+}
+
+// GET /api/classrooms/:id/recordings — list all recordings for this classroom
+router.get('/:id/recordings', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const classroom = await Classroom.findById(req.params.id);
+    if (!classroom) { res.status(404).json({ error: 'Classroom not found' }); return; }
+    if (!isClassroomMember(classroom, req.user!)) { res.status(403).json({ error: 'Not a member of this classroom' }); return; }
+    if (!classroom.mediaRoomId) { res.status(400).json({ error: 'No media room assigned' }); return; }
+
+    // Forward query params to Media Server
+    const params = new URLSearchParams();
+    if (req.query.limit) params.set('limit', String(req.query.limit));
+    if (req.query.cursor) params.set('cursor', String(req.query.cursor));
+    if (req.query.status) params.set('status', String(req.query.status));
+    if (req.query.started_from) params.set('started_from', String(req.query.started_from));
+    if (req.query.started_to) params.set('started_to', String(req.query.started_to));
+
+    const qs = params.toString();
+    const url = `${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/recordings${qs ? `?${qs}` : ''}`;
+    console.log(`[Recording] List recordings: ${url}`);
+
+    const response = await mediaServerFetch(url);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Recording] List error:`, errorText);
+      res.status(response.status).json({ error: 'Failed to fetch recordings' });
+      return;
+    }
+
+    const data = await response.json() as Record<string, unknown>;
+    res.json({ ...data, mediaServerUrl: MEDIA_SERVER_URL });
+  } catch (error) {
+    console.error('List recordings error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/classrooms/:id/recording — get current session recording status
+router.get('/:id/recording', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const classroom = await Classroom.findById(req.params.id);
+    if (!classroom) { res.status(404).json({ error: 'Classroom not found' }); return; }
+    if (!isClassroomMember(classroom, req.user!)) { res.status(403).json({ error: 'Not a member of this classroom' }); return; }
+
+    if (!classroom.lessonSessionId || !classroom.mediaRoomId) {
+      res.json({
+        recordingStatus: classroom.recordingStatus || 'none',
+        recordingEnabled: classroom.recordingEnabled,
+        lessonSessionId: classroom.lessonSessionId || '',
+      });
+      return;
+    }
+
+    // Fetch recording status from Media Server
+    const url = `${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/recordings/${classroom.lessonSessionId}`;
+    console.log(`[Recording] Get status: ${url}`);
+
+    const response = await mediaServerFetch(url);
+    if (response.status === 404) {
+      // Recording not found — teacher hasn't sent H.264/AAC yet, or recording not created
+      res.json({
+        recordingStatus: classroom.recordingStatus,
+        recordingEnabled: classroom.recordingEnabled,
+        lessonSessionId: classroom.lessonSessionId,
+        detail: null,
+      });
+      return;
+    }
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Recording] Status error:`, errorText);
+      res.status(response.status).json({ error: 'Failed to fetch recording status' });
+      return;
+    }
+
+    const detail: any = await response.json();
+
+    // Update local DB if status changed
+    const newStatus = detail.status || classroom.recordingStatus;
+    if (newStatus !== classroom.recordingStatus || detail.hls_url || detail.mp4_url) {
+      if (['ready', 'partial', 'interrupted', 'failed', 'deleting'].includes(newStatus)) {
+        classroom.recordingStatus = newStatus as any;
+      } else if (newStatus === 'finalizing') {
+        classroom.recordingStatus = 'finalizing';
+      } else if (newStatus === 'recording') {
+        classroom.recordingStatus = 'recording';
+      }
+      if (detail.hls_url) classroom.recordingHlsUrl = detail.hls_url;
+      if (detail.mp4_url) classroom.recordingMp4Url = detail.mp4_url;
+      await classroom.save();
+    }
+
+    res.json({
+      recordingStatus: classroom.recordingStatus,
+      recordingEnabled: classroom.recordingEnabled,
+      lessonSessionId: classroom.lessonSessionId,
+      detail,
+    });
+  } catch (error) {
+    console.error('Get recording error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/classrooms/:id/recording/video.mp4 — proxy MP4 download
+router.get('/:id/recording/video.mp4', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const classroom = await Classroom.findById(req.params.id);
+    if (!classroom) { res.status(404).json({ error: 'Classroom not found' }); return; }
+    if (!isClassroomMember(classroom, req.user!)) { res.status(403).json({ error: 'Not a member of this classroom' }); return; }
+    if (!classroom.mediaRoomId) { res.status(400).json({ error: 'No media room assigned' }); return; }
+
+    const sessionId = (req.query.session as string) || classroom.lessonSessionId;
+    if (!sessionId) { res.status(400).json({ error: 'No recording session available' }); return; }
+
+    const url = `${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/recordings/${sessionId}/video.mp4`;
+    console.log(`[Recording] Proxy MP4: ${url}`);
+
+    // Forward Range header for partial content support
+    const headers: any = {};
+    if (req.headers.range) headers['Range'] = req.headers.range;
+
+    const response = await mediaServerFetch(url, { headers });
+    if (!response.ok && response.status !== 206) {
+      const errorText = await response.text();
+      console.error(`[Recording] MP4 proxy error:`, errorText);
+      res.status(response.status).json({ error: 'Failed to fetch recording MP4' });
+      return;
+    }
+
+    // Forward response headers
+    res.status(response.status);
+    const contentType = response.headers.get('content-type');
+    if (contentType) res.setHeader('Content-Type', contentType);
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    const contentRange = response.headers.get('content-range');
+    if (contentRange) res.setHeader('Content-Range', contentRange);
+    const acceptRanges = response.headers.get('accept-ranges');
+    if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
+    res.setHeader('Content-Disposition', `attachment; filename="recording-${sessionId}.mp4"`);
+
+    // Pipe the response body
+    const reader = response.body?.getReader();
+    if (!reader) { res.status(500).json({ error: 'No response body' }); return; }
+
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    };
+    await pump();
+  } catch (error) {
+    console.error('Proxy MP4 error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/classrooms/:id/recording/hls/* — proxy HLS VOD playback
+router.get('/:id/recording/hls/*', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const classroom = await Classroom.findById(req.params.id);
+    if (!classroom) { res.status(404).json({ error: 'Classroom not found' }); return; }
+    if (!isClassroomMember(classroom, req.user!)) { res.status(403).json({ error: 'Not a member of this classroom' }); return; }
+    if (!classroom.mediaRoomId) { res.status(400).json({ error: 'No media room assigned' }); return; }
+
+    const sessionId = (req.query.session as string) || classroom.lessonSessionId;
+    if (!sessionId) { res.status(400).json({ error: 'No recording session available' }); return; }
+
+    // Extract the HLS path after /hls/
+    const hlsPath = req.params[0] || 'master.m3u8';
+    const url = `${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/recordings/${sessionId}/hls/${hlsPath}`;
+    console.log(`[Recording] Proxy HLS: ${url}`);
+
+    const response = await mediaServerFetch(url);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Recording] HLS proxy error:`, errorText);
+      res.status(response.status).json({ error: 'Failed to fetch HLS content' });
+      return;
+    }
+
+    // Forward content type
+    const contentType = response.headers.get('content-type');
+    if (contentType) res.setHeader('Content-Type', contentType);
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+
+    // Pipe the response body
+    const reader = response.body?.getReader();
+    if (!reader) { res.status(500).json({ error: 'No response body' }); return; }
+
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    };
+    await pump();
+  } catch (error) {
+    console.error('Proxy HLS error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/classrooms/:id/recording — delete a recording
+router.delete(
+  '/:id/recording',
+  authorize('teacher', 'admin'),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const classroom = await Classroom.findById(req.params.id);
+      if (!classroom) { res.status(404).json({ error: 'Classroom not found' }); return; }
+
+      const user = req.user!;
+      const isTeacher = classroom.teacher.toString() === user._id.toString();
+      const isAdmin = user.role === 'admin';
+      if (!isTeacher && !isAdmin) { res.status(403).json({ error: 'Only the assigned teacher can delete recordings' }); return; }
+      if (!classroom.mediaRoomId) { res.status(400).json({ error: 'No media room assigned' }); return; }
+
+      const sessionId = req.query.session as string;
+      if (!sessionId) { res.status(400).json({ error: 'session query parameter is required' }); return; }
+
+      const url = `${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/recordings/${sessionId}`;
+      console.log(`[Recording] Delete: ${url}`);
+
+      const response = await mediaServerFetch(url, { method: 'DELETE' });
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[Recording] Delete error:`, errorText);
+        res.status(response.status).json({ error: 'Failed to delete recording' });
+        return;
+      }
+
+      // If deleting current session, reset DB fields
+      if (sessionId === classroom.lessonSessionId) {
+        classroom.recordingStatus = 'none';
+        classroom.recordingHlsUrl = '';
+        classroom.recordingMp4Url = '';
+        await classroom.save();
+      }
+
+      const data = await response.json();
+      res.json(data);
+    } catch (error) {
+      console.error('Delete recording error:', error);
       res.status(500).json({ error: 'Server error' });
     }
   },
@@ -440,7 +739,7 @@ router.post(
       let cameras: any[] = [];
       if (mediaRoomId) {
         try {
-          const camResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${mediaRoomId}/cameras`);
+          const camResponse = await mediaServerFetch(`${MEDIA_SERVER_URL}/rooms/${mediaRoomId}/cameras`);
           if (camResponse.ok) {
             const camData = await camResponse.json();
             if (Array.isArray(camData)) {
@@ -523,7 +822,7 @@ router.put(
       // If mediaRoomId changed, re-fetch cameras
       if (mediaRoomId) {
         try {
-          const camResponse = await fetch(`${MEDIA_SERVER_URL}/rooms/${mediaRoomId}/cameras`);
+          const camResponse = await mediaServerFetch(`${MEDIA_SERVER_URL}/rooms/${mediaRoomId}/cameras`);
           if (camResponse.ok) {
             const camData = await camResponse.json();
             if (Array.isArray(camData)) {
@@ -576,7 +875,7 @@ router.delete(
       // Stop media room if class is live
       if (classroom.classStatus === 'live' && classroom.mediaRoomId) {
         try {
-          await fetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
+          await mediaServerFetch(`${MEDIA_SERVER_URL}/rooms/${classroom.mediaRoomId}/stop`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({}),

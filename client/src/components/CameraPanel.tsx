@@ -1,6 +1,34 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Hls from 'hls.js';
 
+const RELAY_WORKER_URL = import.meta.env.VITE_RELAY_WORKER_URL || '';
+
+/**
+ * Convert an origin HLS URL to go through the relay Worker CDN.
+ * Mirrors dashboard.html's relayPlaylistUrl() logic:
+ *   origin: https://classroom-mediaserver.ermis.network/live/cam-001/master.m3u8
+ *   relay:  https://relay-dev.ermis.network/hls/live/cam-001/master.m3u8
+ * Falls back to the original URL if relay is not configured.
+ */
+function toRelayUrl(originUrl: string): string {
+  if (!RELAY_WORKER_URL || !originUrl) return originUrl;
+  try {
+    const source = new URL(originUrl);
+    const relay = new URL(RELAY_WORKER_URL);
+    const relayPath = relay.pathname.replace(/\/+$/, '');
+    // Already a relay URL
+    if (source.origin === relay.origin && source.pathname.startsWith(`${relayPath}/`)) {
+      return source.toString();
+    }
+    relay.pathname = `${relayPath}/${source.pathname.replace(/^\/+/, '')}`;
+    relay.search = source.search;
+    relay.hash = source.hash;
+    return relay.toString();
+  } catch {
+    return originUrl;
+  }
+}
+
 interface Camera {
   name: string;
   url: string;
@@ -40,7 +68,7 @@ const ExitFullscreenIcon = () => (
   <svg viewBox="0 0 24 24" fill="currentColor" width={18} height={18}><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" /></svg>
 );
 
-type PlayerStatus = 'idle' | 'connecting' | 'connected' | 'error';
+type PlayerStatus = 'idle' | 'connecting' | 'connected' | 'waiting' | 'error';
 
 // ---- HLS Camera Player ----
 function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: string; name: string; description?: string; isTeacherStream?: boolean }) {
@@ -54,7 +82,7 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
   const [status, setStatus] = useState<PlayerStatus>('idle');
   const [statusMsg, setStatusMsg] = useState('');
   const [isPaused, setIsPaused] = useState(true);
-  const [isMuted, setIsMuted] = useState(!isTeacherStream); // Teacher stream unmuted by default
+  const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [controlsVisible, setControlsVisible] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -167,9 +195,9 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       if (data.fatal) {
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          setStatus('error');
-          setStatusMsg('Lỗi mạng – đang thử lại…');
-          setTimeout(() => hlsRef.current?.startLoad(), 2000);
+          setStatus('waiting');
+          setStatusMsg('Đang chờ nguồn phát...');
+          setTimeout(() => hlsRef.current?.startLoad(), 3000);
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           mediaErrorCountRef.current += 1;
           if (mediaErrorCountRef.current <= 3) {
@@ -258,6 +286,7 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
     setIsMuted(v === 0);
   };
 
+
   const toggleFullscreen = () => {
     const el = wrapperRef.current;
     if (!el) return;
@@ -265,11 +294,12 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
     else document.exitFullscreen();
   };
 
-  const dotColor = status === 'connected' ? (isAtLiveEdge ? '#ff0000' : '#888') : status === 'error' ? '#ff4444' : '#555';
+  const dotColor = status === 'connected' ? (isAtLiveEdge ? '#ff0000' : '#888') : status === 'error' ? '#ff4444' : status === 'waiting' ? '#f59e0b' : '#555';
   const dotGlow = status === 'connected' && isAtLiveEdge ? '0 0 8px #ff0000' : undefined;
   const statusLabel = status === 'connected'
     ? (isAtLiveEdge ? 'LIVE' : 'GO LIVE')
     : status === 'connecting' ? 'CONNECTING...'
+    : status === 'waiting' ? 'WAITING'
     : status === 'error' ? 'ERROR'
     : 'OFFLINE';
   const statusColor = status === 'connected' ? (isAtLiveEdge ? '#fff' : '#ccc') : status === 'error' ? '#ff4444' : '#999';
@@ -290,7 +320,7 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
       )}
 
       {/* Big Play Button */}
-      {isPaused && status !== 'connecting' && status !== 'error' && (
+      {isPaused && status !== 'connecting' && status !== 'error' && status !== 'waiting' && (
         <div
           className="absolute inset-0 flex items-center justify-center z-10 cursor-pointer bg-black/30"
           onClick={togglePlay}
@@ -301,7 +331,16 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
         </div>
       )}
 
-      {/* Error Overlay */}
+      {/* Waiting / Error Overlay */}
+      {status === 'waiting' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center z-[15] bg-black/80 text-center p-5">
+          <div className="w-12 h-12 border-4 border-white/10 border-l-blue-400 rounded-full animate-spin mb-4" />
+          <div className="text-base font-semibold text-white mb-1">
+            {isTeacherStream ? 'Giáo viên chưa phát sóng' : 'Camera chưa phát sóng'}
+          </div>
+          <div className="text-[13px] text-slate-400">Vui lòng chờ, sẽ tự động kết nối khi có tín hiệu</div>
+        </div>
+      )}
       {status === 'error' && (
         <div className="absolute inset-0 flex flex-col items-center justify-center z-[15] bg-black/70 text-red-400 text-center p-5">
           <svg viewBox="0 0 24 24" fill="currentColor" width={48} height={48} className="mb-3">
@@ -324,7 +363,7 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
         crossOrigin="anonymous"
         playsInline
         autoPlay
-        muted={isMuted}
+        muted={isTeacherStream ? isMuted : true}
         onPlay={() => setIsPaused(false)}
         onPause={() => setIsPaused(true)}
         className="w-full h-full block object-contain"
@@ -376,25 +415,27 @@ function HLSCameraPlayer({ url, name, description, isTeacherStream }: { url: str
               {isPaused ? <PlayIcon /> : <PauseIcon />}
             </button>
 
-            {/* Volume */}
-            <div className="flex items-center group">
-              <button
-                className="bg-transparent border-none text-white cursor-pointer w-[34px] h-[34px] flex items-center justify-center rounded-md transition-colors hover:text-blue-400"
-                onClick={toggleMute}
-              >
-                {isMuted || volume === 0 ? <MutedIcon /> : <VolumeIcon />}
-              </button>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={isMuted ? 0 : volume}
-                onChange={handleVolumeChange}
-                className="w-0 opacity-0 ml-0 transition-all duration-200 cursor-pointer h-[3px] group-hover:w-[72px] group-hover:opacity-100 group-hover:ml-1"
-                style={{ accentColor: 'white' }}
-              />
-            </div>
+            {/* Volume — only for teacher stream */}
+            {isTeacherStream && (
+              <div className="flex items-center group">
+                <button
+                  className="bg-transparent border-none text-white cursor-pointer w-[34px] h-[34px] flex items-center justify-center rounded-md transition-colors hover:text-blue-400"
+                  onClick={toggleMute}
+                >
+                  {isMuted || volume === 0 ? <MutedIcon /> : <VolumeIcon />}
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={isMuted ? 0 : volume}
+                  onChange={handleVolumeChange}
+                  className="w-0 opacity-0 ml-0 transition-all duration-200 cursor-pointer h-[3px] group-hover:w-[72px] group-hover:opacity-100 group-hover:ml-1"
+                  style={{ accentColor: 'white' }}
+                />
+              </div>
+            )}
 
             {/* Live badge button */}
             <button
@@ -439,7 +480,7 @@ export default function CameraPanel({ cameras, teacherStream }: CameraPanelProps
     if (teacherStream && teacherStream.masterUrl) {
       feeds.push({
         name: 'Giáo viên',
-        url: teacherStream.masterUrl,
+        url: toRelayUrl(teacherStream.masterUrl),
         description: 'Hình + Tiếng',
         isTeacherStream: true,
       });
@@ -449,7 +490,7 @@ export default function CameraPanel({ cameras, teacherStream }: CameraPanelProps
       if (cam.url) {
         feeds.push({
           name: cam.name,
-          url: cam.url,
+          url: toRelayUrl(cam.url),
           description: cam.description,
           isTeacherStream: false,
         });

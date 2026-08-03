@@ -36,6 +36,11 @@ export interface IClassroom extends Document {
   mediaRoomId: string;
   mediaRoomName: string;
   classStatus: 'idle' | 'live' | 'ended';
+  lessonSessionId: string;
+  recordingEnabled: boolean;
+  recordingStatus: 'none' | 'recording' | 'finalizing' | 'ready' | 'partial' | 'interrupted' | 'failed' | 'deleting';
+  recordingHlsUrl: string;
+  recordingMp4Url: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -133,6 +138,27 @@ const classroomSchema = new Schema<IClassroom>(
       type: String,
       enum: ['idle', 'live', 'ended'],
       default: 'idle',
+    },
+    lessonSessionId: {
+      type: String,
+      default: '',
+    },
+    recordingEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    recordingStatus: {
+      type: String,
+      enum: ['none', 'recording', 'finalizing', 'ready', 'partial', 'interrupted', 'failed', 'deleting'],
+      default: 'none',
+    },
+    recordingHlsUrl: {
+      type: String,
+      default: '',
+    },
+    recordingMp4Url: {
+      type: String,
+      default: '',
     },
   },
   {
